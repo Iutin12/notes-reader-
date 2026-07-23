@@ -61,6 +61,17 @@ export function parseMusicXml(xml: string): ScoreData {
   const score = doc.querySelector("score-partwise, score-timewise");
   if (!score) throw new Error("Это XML-файл, но в нём нет партитуры MusicXML.");
 
+  // OMR can mistake long staff lines for volta brackets. Endings without a
+  // single repeat are structurally invalid and make OSMD's playback iterator
+  // jump over large parts of the score while our linear audio keeps playing.
+  if (
+    doc.querySelectorAll("repeat").length === 0 &&
+    doc.querySelectorAll("ending").length > 0
+  ) {
+    doc.querySelectorAll("ending").forEach((ending) => ending.remove());
+  }
+  const sanitizedXml = new XMLSerializer().serializeToString(doc);
+
   const title =
     text(doc, "work-title") ||
     text(doc, "movement-title") ||
@@ -208,7 +219,7 @@ export function parseMusicXml(xml: string): ScoreData {
       (a, b) => a.startBeat - b.startBeat || a.partId.localeCompare(b.partId),
     ),
     parts: [...partNames].map(([id, name]) => ({ id, name })),
-    sourceXml: xml,
+    sourceXml: sanitizedXml,
   };
 }
 
