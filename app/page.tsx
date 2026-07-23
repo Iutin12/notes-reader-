@@ -94,6 +94,10 @@ function simplifyMusicXmlForRendering(xml: string) {
     .replace(/<print\b[^>]*>[\s\S]*?<\/print\s*>/gi, "");
 }
 
+function displayNameFromFile(fileName: string) {
+  return fileName.replace(/\.[^.]+$/, "") || fileName;
+}
+
 function fractionValue(fraction?: FractionLike) {
   if (!fraction) return 0;
   if (Number.isFinite(fraction.RealValue)) return fraction.RealValue || 0;
@@ -429,7 +433,7 @@ export default function Home() {
 
   const openScore = useCallback((data: ScoreData, sourceName: string) => {
     stop();
-    setScore(data);
+    setScore({ ...data, title: displayNameFromFile(sourceName) });
     setFileName(sourceName);
     setRangeStart(1);
     setRangeEnd(data.measureCount);

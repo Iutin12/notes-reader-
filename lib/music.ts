@@ -53,6 +53,27 @@ function pitchName(step: string, alter: number, octave: number, solfege = false)
   return `${solfege ? SOLFEGE[step] : step}${accidental}${octave}`;
 }
 
+function firstTempo(doc: Document) {
+  const soundTempo = Number(doc.querySelector("sound[tempo]")?.getAttribute("tempo"));
+  if (Number.isFinite(soundTempo) && soundTempo > 0) return soundTempo;
+
+  const metronomeTempo = Number(text(doc, "metronome per-minute", "0"));
+  if (Number.isFinite(metronomeTempo) && metronomeTempo > 0) {
+    return metronomeTempo;
+  }
+
+  // Some OMR sources retain a tempo mark as text, for example "♩ = 96"
+  // or "q = 96", instead of a structured <metronome> element.
+  for (const word of doc.querySelectorAll("direction-type words")) {
+    const match = word.textContent?.match(
+      /(?:♩|♪|q|quarter|bpm)\s*(?:=|:)?\s*(\d{2,3})\b/i,
+    );
+    const tempo = Number(match?.[1]);
+    if (Number.isFinite(tempo) && tempo >= 20 && tempo <= 400) return tempo;
+  }
+  return 96;
+}
+
 export function parseMusicXml(xml: string): ScoreData {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
   if (doc.querySelector("parsererror")) {
@@ -90,11 +111,7 @@ export function parseMusicXml(xml: string): ScoreData {
     partNames.set(id, text(part, "part-name", `Партия ${partNames.size + 1}`));
   });
 
-  let bpm = Number(text(doc, "sound[tempo]", "0"));
-  if (!bpm) {
-    const sound = doc.querySelector("sound[tempo]");
-    bpm = Number(sound?.getAttribute("tempo")) || 96;
-  }
+  let bpm = firstTempo(doc);
   let beatsPerMeasure = 4;
   const events: MusicEvent[] = [];
   let measureCount = 0;
@@ -120,8 +137,9 @@ export function parseMusicXml(xml: string): ScoreData {
           Number(text(measureNode, "attributes time beat-type", "0")) || 0;
         if (beats && beatType) measureBeats = beats * (4 / beatType);
         beatsPerMeasure = measureBeats;
-        const tempo = measureNode.querySelector("sound[tempo]")?.getAttribute("tempo");
-        if (tempo && events.length === 0) bpm = Number(tempo) || bpm;
+        if (events.length === 0) {
+          bpm = firstTempo(measureNode.ownerDocument || doc);
+        }
 
         const measureStart = absoluteBeat;
         let cursor = 0;
