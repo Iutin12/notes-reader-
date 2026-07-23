@@ -9,12 +9,21 @@ const PIANO_SAMPLES = [
   ["A7", 105], ["C8", 108],
 ] as const;
 
+export type RenderedPianoNote = {
+  midi: number;
+  offset: number;
+  duration: number;
+  transpose: number;
+  polyphony: number;
+};
+
 export class PianoSynth {
   private context: AudioContext | null = null;
   private master: GainNode | null = null;
   private compressor: DynamicsCompressorNode | null = null;
   private active = new Set<AudioScheduledSourceNode>();
   private nativeActive = new Set<HTMLAudioElement>();
+  private nativeObjectUrls = new Map<HTMLAudioElement, string>();
   private nativeTimers = new Set<number>();
   private nativeSamples = new Map<number, HTMLAudioElement>();
   private samples = new Map<number, AudioBuffer>();
@@ -59,7 +68,8 @@ export class PianoSynth {
   preload() {
     if (this.useNativeAudio()) {
       this.prepareNativeSamples();
-      return Promise.resolve();
+      this.ensureContext();
+      return this.loadSamples();
     }
     this.ensureContext();
     return this.loadSamples();
@@ -75,6 +85,7 @@ export class PianoSynth {
       await sample.play();
       sample.pause();
       sample.currentTime = 0;
+      await this.loadSamples();
       return this.ensureContext();
     }
     const context = this.ensureContext();
@@ -100,6 +111,119 @@ export class PianoSynth {
   currentTime() {
     if (this.useNativeAudio()) return performance.now() / 1000;
     return this.context?.currentTime ?? 0;
+  }
+
+  isNativePlayback() {
+    return this.useNativeAudio();
+  }
+
+  async playRendered(
+    notes: RenderedPianoNote[],
+    totalDuration: number,
+    leadingSilence = 0,
+  ) {
+    if (!this.useNativeAudio() || this.samples.size === 0) return;
+    const sampleRate = 44100;
+    const tail = 2.2;
+    const length = Math.max(
+      1,
+      Math.ceil((leadingSilence + totalDuration + tail) * sampleRate),
+    );
+    const offline = new OfflineAudioContext(1, length, sampleRate);
+    const master = offline.createGain();
+    const compressor = offline.createDynamicsCompressor();
+    compressor.threshold.value = -20;
+    compressor.knee.value = 20;
+    compressor.ratio.value = 4;
+    compressor.attack.value = 0.004;
+    compressor.release.value = 0.3;
+    master.gain.value = this.volume * 0.72;
+    master.connect(compressor);
+    compressor.connect(offline.destination);
+
+    notes.forEach((note) => {
+      const targetMidi = note.midi + note.transpose;
+      const sampleMidi = PIANO_SAMPLES.reduce((nearest, candidate) =>
+        Math.abs(candidate[1] - targetMidi) <
+        Math.abs(nearest[1] - targetMidi)
+          ? candidate
+          : nearest,
+      )[1];
+      const buffer = this.samples.get(sampleMidi);
+      if (!buffer) return;
+      const start = leadingSilence + note.offset;
+      const noteEnd = start + Math.max(0.08, note.duration);
+      const releaseEnd = Math.min(
+        length / sampleRate - 0.02,
+        noteEnd + 1.45,
+      );
+      const source = offline.createBufferSource();
+      const gain = offline.createGain();
+      source.buffer = buffer;
+      source.playbackRate.value = 2 ** ((targetMidi - sampleMidi) / 12);
+      const level = 0.58 / Math.sqrt(Math.max(1, note.polyphony));
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(level, start + 0.006);
+      gain.gain.exponentialRampToValueAtTime(level * 0.72, start + 0.1);
+      gain.gain.setValueAtTime(level * 0.72, noteEnd);
+      gain.gain.exponentialRampToValueAtTime(0.0001, releaseEnd);
+      source.connect(gain);
+      gain.connect(master);
+      source.start(start);
+      source.stop(releaseEnd + 0.01);
+    });
+
+    const rendered = await offline.startRendering();
+    const url = URL.createObjectURL(this.encodeWave(rendered));
+    const audio = new Audio(url);
+    audio.volume = 1;
+    this.nativeActive.add(audio);
+    this.nativeObjectUrls.set(audio, url);
+    const cleanup = () => {
+      this.nativeActive.delete(audio);
+      this.nativeObjectUrls.delete(audio);
+      URL.revokeObjectURL(url);
+    };
+    audio.addEventListener("ended", cleanup, { once: true });
+    try {
+      await audio.play();
+    } catch (error) {
+      cleanup();
+      throw error;
+    }
+  }
+
+  private encodeWave(buffer: AudioBuffer) {
+    const samples = buffer.getChannelData(0);
+    const bytes = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(bytes);
+    const write = (offset: number, value: string) => {
+      for (let index = 0; index < value.length; index += 1) {
+        view.setUint8(offset + index, value.charCodeAt(index));
+      }
+    };
+    write(0, "RIFF");
+    view.setUint32(4, 36 + samples.length * 2, true);
+    write(8, "WAVE");
+    write(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, buffer.sampleRate, true);
+    view.setUint32(28, buffer.sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    write(36, "data");
+    view.setUint32(40, samples.length * 2, true);
+    for (let index = 0; index < samples.length; index += 1) {
+      const value = Math.max(-1, Math.min(1, samples[index]));
+      view.setInt16(
+        44 + index * 2,
+        value < 0 ? value * 32768 : value * 32767,
+        true,
+      );
+    }
+    return new Blob([bytes], { type: "audio/wav" });
   }
 
   private loadSamples() {
@@ -249,8 +373,11 @@ export class PianoSynth {
     this.nativeActive.forEach((audio) => {
       audio.pause();
       audio.currentTime = 0;
+      const url = this.nativeObjectUrls.get(audio);
+      if (url) URL.revokeObjectURL(url);
     });
     this.nativeActive.clear();
+    this.nativeObjectUrls.clear();
     if (!this.context) return;
     this.active.forEach((source) => {
       try {

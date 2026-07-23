@@ -660,72 +660,108 @@ export default function Home() {
       const scheduled = candidates.filter(
         (event) => event.startBeat < fragmentEndBeat,
       );
+      const lastScheduled = scheduled[scheduled.length - 1];
+      const nativePlayback = synthRef.current.isNativePlayback();
+
+      if (nativePlayback) {
+        const renderedNotes = scheduled.flatMap((event) =>
+          event.midi.map((midi) => ({
+            midi,
+            offset: (event.startBeat - baseBeat) * beatSeconds,
+            duration: durationSeconds(event, score.bpm, speed),
+            transpose,
+            polyphony: event.midi.length,
+          })),
+        );
+        const renderedDuration = lastScheduled
+          ? (lastScheduled.startBeat -
+              baseBeat +
+              lastScheduled.durationBeats) *
+            beatSeconds
+          : beatSeconds;
+        try {
+          await synthRef.current.playRendered(
+            renderedNotes,
+            renderedDuration,
+            countDelay,
+          );
+        } catch (caught) {
+          setError(
+            caught instanceof Error
+              ? `Не удалось собрать непрерывный звук: ${caught.message}`
+              : "Safari не смог воспроизвести собранную аудиодорожку.",
+          );
+          return;
+        }
+      }
 
       setPlaying(true);
       setCurrentEvent(startIndex);
       playStartedRef.current = performance.now() + countDelay * 1000;
       positionStartedRef.current = (baseBeat * 60) / (score.bpm * speed);
 
-      if (countIn > 0) {
+      if (!nativePlayback && countIn > 0) {
         for (let beat = 0; beat < countIn; beat += 1) {
           synthRef.current.click(beat === 0, beat * beatSeconds, metronomeVolume);
         }
       }
 
-      const audioStartTime = synthRef.current.currentTime() + countDelay;
-      let nextAudioEvent = 0;
-      let nextMetronomeBeat = Math.ceil(baseBeat - 0.0001);
-      let audioScheduler: number | null = null;
-      const lastScheduled = scheduled[scheduled.length - 1];
-      const audioEndBeat = lastScheduled
-        ? lastScheduled.startBeat + lastScheduled.durationBeats
-        : baseBeat + 1;
-      const scheduleAudioWindow = () => {
-        const schedulerNow = synthRef.current.currentTime();
-        const horizon = schedulerNow + 3;
-        while (nextAudioEvent < scheduled.length) {
-          const event = scheduled[nextAudioEvent];
-          const targetTime =
-            audioStartTime + (event.startBeat - baseBeat) * beatSeconds;
-          if (targetTime > horizon) break;
-          const delay = Math.max(0, targetTime - schedulerNow);
-          event.midi.forEach((midi) =>
-            synthRef.current.note(
-              midi,
-              durationSeconds(event, score.bpm, speed),
-              delay,
-              transpose,
-              event.midi.length,
-            ),
-          );
-          nextAudioEvent += 1;
-        }
-        if (metronome) {
-          while (nextMetronomeBeat <= audioEndBeat) {
+      if (!nativePlayback) {
+        const audioStartTime = synthRef.current.currentTime() + countDelay;
+        let nextAudioEvent = 0;
+        let nextMetronomeBeat = Math.ceil(baseBeat - 0.0001);
+        let audioScheduler: number | null = null;
+        const audioEndBeat = lastScheduled
+          ? lastScheduled.startBeat + lastScheduled.durationBeats
+          : baseBeat + 1;
+        const scheduleAudioWindow = () => {
+          const schedulerNow = synthRef.current.currentTime();
+          const horizon = schedulerNow + 3;
+          while (nextAudioEvent < scheduled.length) {
+            const event = scheduled[nextAudioEvent];
             const targetTime =
               audioStartTime +
-              (nextMetronomeBeat - baseBeat) * beatSeconds;
+              (event.startBeat - baseBeat) * beatSeconds;
             if (targetTime > horizon) break;
-            synthRef.current.click(
-              Math.abs(nextMetronomeBeat % score.beatsPerMeasure) < 0.001,
-              Math.max(0, targetTime - schedulerNow),
-              metronomeVolume,
+            const delay = Math.max(0, targetTime - schedulerNow);
+            event.midi.forEach((midi) =>
+              synthRef.current.note(
+                midi,
+                durationSeconds(event, score.bpm, speed),
+                delay,
+                transpose,
+                event.midi.length,
+              ),
             );
-            nextMetronomeBeat += 1;
+            nextAudioEvent += 1;
           }
-        }
-        if (
-          audioScheduler !== null &&
-          nextAudioEvent >= scheduled.length &&
-          (!metronome || nextMetronomeBeat > audioEndBeat)
-        ) {
-          window.clearInterval(audioScheduler);
-          audioScheduler = null;
-        }
-      };
-      scheduleAudioWindow();
-      audioScheduler = window.setInterval(scheduleAudioWindow, 50);
-      timersRef.current.push(audioScheduler);
+          if (metronome) {
+            while (nextMetronomeBeat <= audioEndBeat) {
+              const targetTime =
+                audioStartTime +
+                (nextMetronomeBeat - baseBeat) * beatSeconds;
+              if (targetTime > horizon) break;
+              synthRef.current.click(
+                Math.abs(nextMetronomeBeat % score.beatsPerMeasure) < 0.001,
+                Math.max(0, targetTime - schedulerNow),
+                metronomeVolume,
+              );
+              nextMetronomeBeat += 1;
+            }
+          }
+          if (
+            audioScheduler !== null &&
+            nextAudioEvent >= scheduled.length &&
+            (!metronome || nextMetronomeBeat > audioEndBeat)
+          ) {
+            window.clearInterval(audioScheduler);
+            audioScheduler = null;
+          }
+        };
+        scheduleAudioWindow();
+        audioScheduler = window.setInterval(scheduleAudioWindow, 50);
+        timersRef.current.push(audioScheduler);
+      }
 
       scheduled.forEach((event) => {
         const offset = (event.startBeat - baseBeat) * beatSeconds + countDelay;
