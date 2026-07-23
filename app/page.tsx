@@ -73,7 +73,6 @@ type ScoreClickPosition = {
   height: number;
 };
 
-const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const MAX_FILE_SIZE = 25 * 1024 * 1024;
 const PDF_MAX_FILE_SIZE = 50 * 1024 * 1024;
 const OMR_STAGES: Array<{ stage: OmrStage; label: string }> = [
@@ -1262,7 +1261,7 @@ export default function Home() {
             <div><span className="status-dot" />Такт {currentMeasure} из {score.measureCount}</div>
             <div className="zoom-note">
               {score.sourceXml && "Нажмите на ноты, чтобы играть отсюда · "}
-              {score.bpm} BPM
+              {Math.round(score.bpm * speed)} BPM
             </div>
           </div>
           {score.sourceXml ? (
@@ -1336,9 +1335,23 @@ export default function Home() {
           <span>{formatTime(totalDuration)}</span>
         </div>
         <div className="transport-options">
-          <label className="select-control"><span>Скорость</span><select value={speed} onChange={(event) => { stop(false); setSpeed(Number(event.target.value)); }}>
-            {SPEEDS.map((value) => <option key={value} value={value}>{Math.round(value * 100)}%</option>)}
-          </select></label>
+          <label className="select-control">
+            <span>Темп, BPM</span>
+            <input
+              aria-label="Темп в ударах в минуту"
+              type="number"
+              min={30}
+              max={300}
+              step={1}
+              value={Math.round(score.bpm * speed)}
+              onChange={(event) => {
+                const bpm = Number(event.target.value);
+                if (!Number.isFinite(bpm) || bpm <= 0) return;
+                stop(false);
+                setSpeed(Math.max(30, Math.min(300, bpm)) / score.bpm);
+              }}
+            />
+          </label>
           <label className="volume-control"><span>Громкость</span><input type="range" min={0} max={1} step={0.01} value={volume} onChange={(event) => { const value = Number(event.target.value); setVolume(value); synthRef.current.setVolume(value); }} /></label>
           <button className={`toggle-button ${metronome ? "on" : ""}`} onClick={() => setMetronome(!metronome)}><span>♩</span> Метроном</button>
           <button className={`toggle-button ${repeat ? "on" : ""}`} onClick={() => setRepeat(!repeat)}><span>↻</span> Повтор</button>

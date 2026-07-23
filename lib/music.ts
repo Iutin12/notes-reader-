@@ -64,13 +64,17 @@ export function parseMusicXml(xml: string): ScoreData {
   // OMR can mistake long staff lines for volta brackets. Endings without a
   // single repeat are structurally invalid and make OSMD's playback iterator
   // jump over large parts of the score while our linear audio keeps playing.
-  if (
+  const hasInvalidEndings =
     doc.querySelectorAll("repeat").length === 0 &&
-    doc.querySelectorAll("ending").length > 0
-  ) {
+    doc.querySelectorAll("ending").length > 0;
+  if (hasInvalidEndings) {
     doc.querySelectorAll("ending").forEach((ending) => ending.remove());
   }
-  const sanitizedXml = new XMLSerializer().serializeToString(doc);
+  const sanitizedXml = hasInvalidEndings
+    ? xml
+        .replace(/<ending\b[^>]*\/\s*>/gi, "")
+        .replace(/<ending\b[^>]*>[\s\S]*?<\/ending\s*>/gi, "")
+    : xml;
 
   const title =
     text(doc, "work-title") ||
