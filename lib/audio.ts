@@ -32,8 +32,10 @@ export class PianoSynth {
       this.master.connect(this.compressor);
       this.compressor.connect(this.context.destination);
     }
-    await this.loadSamples();
+    // Safari and some Chromium configurations only allow resume() while the
+    // original click is still active. Do this before any network/decode await.
     if (this.context.state === "suspended") await this.context.resume();
+    await this.loadSamples();
     return this.context;
   }
 
