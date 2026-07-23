@@ -1,0 +1,6 @@
+allowBuilds:
+  esbuild: true
+  gl: false
+  sharp: true
+  unrs-resolver: true
+  workerd: true

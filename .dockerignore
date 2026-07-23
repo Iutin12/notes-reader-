@@ -1,0 +1,8 @@
+node_modules
+dist
+.next
+.git
+.wrangler
+.env
+npm-debug.log
+omr-data
