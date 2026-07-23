@@ -26,6 +26,7 @@ export class PianoSynth {
   private nativeObjectUrls = new Map<HTMLAudioElement, string>();
   private nativeTimers = new Set<number>();
   private nativeSamples = new Map<number, HTMLAudioElement>();
+  private playbackGeneration = 0;
   private samples = new Map<number, AudioBuffer>();
   private loadingSamples: Promise<void> | null = null;
   private volume = 0.7;
@@ -123,11 +124,91 @@ export class PianoSynth {
     leadingSilence = 0,
   ) {
     if (!this.useNativeAudio() || this.samples.size === 0) return;
+    const generation = ++this.playbackGeneration;
+    const chunkDuration = 20;
+    const timelineDuration = leadingSilence + totalDuration;
+    const first = await this.renderChunk(
+      notes,
+      0,
+      Math.min(chunkDuration, timelineDuration),
+      leadingSilence,
+    );
+    if (generation !== this.playbackGeneration) {
+      URL.revokeObjectURL(first.url);
+      return;
+    }
+    await this.startRenderedChunk(
+      first,
+      notes,
+      chunkDuration,
+      timelineDuration,
+      leadingSilence,
+      generation,
+    );
+  }
+
+  private async startRenderedChunk(
+    chunk: { audio: HTMLAudioElement; url: string; span: number },
+    notes: RenderedPianoNote[],
+    nextStart: number,
+    timelineDuration: number,
+    leadingSilence: number,
+    generation: number,
+  ) {
+    const { audio, url, span } = chunk;
+    this.nativeActive.add(audio);
+    this.nativeObjectUrls.set(audio, url);
+    const cleanup = () => {
+      this.nativeActive.delete(audio);
+      this.nativeObjectUrls.delete(audio);
+      URL.revokeObjectURL(url);
+    };
+    audio.addEventListener("ended", cleanup, { once: true });
+    try {
+      await audio.play();
+    } catch (error) {
+      cleanup();
+      throw error;
+    }
+    if (nextStart >= timelineDuration) return;
+
+    const nextSpan = Math.min(20, timelineDuration - nextStart);
+    const nextChunk = this.renderChunk(
+      notes,
+      nextStart,
+      nextSpan,
+      leadingSilence,
+    );
+    const timer = window.setTimeout(async () => {
+      this.nativeTimers.delete(timer);
+      const rendered = await nextChunk;
+      if (generation !== this.playbackGeneration) {
+        URL.revokeObjectURL(rendered.url);
+        return;
+      }
+      await this.startRenderedChunk(
+        rendered,
+        notes,
+        nextStart + nextSpan,
+        timelineDuration,
+        leadingSilence,
+        generation,
+      );
+    }, span * 1000);
+    this.nativeTimers.add(timer);
+  }
+
+  private async renderChunk(
+    notes: RenderedPianoNote[],
+    chunkStart: number,
+    chunkSpan: number,
+    leadingSilence: number,
+  ) {
     const sampleRate = 44100;
     const tail = 2.2;
     const length = Math.max(
       1,
-      Math.ceil((leadingSilence + totalDuration + tail) * sampleRate),
+      Math.ceil((chunkSpan + tail) * sampleRate),
     );
     const offline = new OfflineAudioContext(1, length, sampleRate);
     const master = offline.createGain();
@@ -142,6 +223,13 @@ export class PianoSynth {
     compressor.connect(offline.destination);
 
     notes.forEach((note) => {
+      const absoluteStart = leadingSilence + note.offset;
+      if (
+        absoluteStart < chunkStart ||
+        absoluteStart >= chunkStart + chunkSpan
+      ) {
+        return;
+      }
       const targetMidi = note.midi + note.transpose;
       const sampleMidi = PIANO_SAMPLES.reduce((nearest, candidate) =>
         Math.abs(candidate[1] - targetMidi) <
@@ -151,7 +239,7 @@ export class PianoSynth {
       )[1];
       const buffer = this.samples.get(sampleMidi);
       if (!buffer) return;
-      const start = leadingSilence + note.offset;
+      const start = absoluteStart - chunkStart;
       const noteEnd = start + Math.max(0.08, note.duration);
       const releaseEnd = Math.min(
         length / sampleRate - 0.02,
@@ -177,20 +265,8 @@ export class PianoSynth {
     const url = URL.createObjectURL(this.encodeWave(rendered));
     const audio = new Audio(url);
     audio.volume = 1;
-    this.nativeActive.add(audio);
-    this.nativeObjectUrls.set(audio, url);
-    const cleanup = () => {
-      this.nativeActive.delete(audio);
-      this.nativeObjectUrls.delete(audio);
-      URL.revokeObjectURL(url);
-    };
-    audio.addEventListener("ended", cleanup, { once: true });
-    try {
-      await audio.play();
-    } catch (error) {
-      cleanup();
-      throw error;
-    }
+    audio.preload = "auto";
+    return { audio, url, span: chunkSpan };
   }
 
   private encodeWave(buffer: AudioBuffer) {
@@ -368,6 +444,7 @@ export class PianoSynth {
   }
 
   stopAll() {
+    this.playbackGeneration += 1;
     this.nativeTimers.forEach((timer) => window.clearTimeout(timer));
     this.nativeTimers.clear();
     this.nativeActive.forEach((audio) => {
