@@ -86,6 +86,14 @@ const OMR_STAGES: Array<{ stage: OmrStage; label: string }> = [
 const wait = (milliseconds: number) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
+function simplifyMusicXmlForRendering(xml: string) {
+  return xml
+    .replace(/<beam\b[^>]*>[\s\S]*?<\/beam\s*>/gi, "")
+    .replace(/<notations\b[^>]*>[\s\S]*?<\/notations\s*>/gi, "")
+    .replace(/<direction\b[^>]*>[\s\S]*?<\/direction\s*>/gi, "")
+    .replace(/<print\b[^>]*>[\s\S]*?<\/print\s*>/gi, "");
+}
+
 function fractionValue(fraction?: FractionLike) {
   if (!fraction) return 0;
   if (Number.isFinite(fraction.RealValue)) return fraction.RealValue || 0;
@@ -353,27 +361,63 @@ export default function Home() {
       if (!data.sourceXml) return;
       try {
         const { OpenSheetMusicDisplay } = await import("opensheetmusicdisplay");
-        const osmd = new OpenSheetMusicDisplay(scoreRef.current, {
-          autoResize: true,
-          backend: "svg",
-          drawTitle: false,
-          drawingParameters: "compacttight",
-          followCursor: true,
-          cursorsOptions: [
-            {
-              type: 4,
-              color: "#2f6b57",
-              alpha: 0.16,
-              follow: true,
-            },
-          ],
-        });
-        await osmd.load(data.sourceXml);
-        osmd.render();
-        osmdRef.current = osmd;
-        collectScoreClickPositions(osmd.cursor, data);
+        const attempts = [
+          { xml: data.sourceXml, simplified: false },
+          { xml: simplifyMusicXmlForRendering(data.sourceXml), simplified: true },
+        ];
+        let lastFailure: unknown = null;
+        for (const attempt of attempts) {
+          try {
+            scoreRef.current.innerHTML = "";
+            const osmd = new OpenSheetMusicDisplay(scoreRef.current, {
+              autoResize: true,
+              backend: "svg",
+              drawTitle: false,
+              drawingParameters: "compacttight",
+              followCursor: true,
+              cursorsOptions: [
+                {
+                  type: 4,
+                  color: "#2f6b57",
+                  alpha: 0.16,
+                  follow: true,
+                },
+              ],
+            });
+            await osmd.load(attempt.xml);
+            osmd.render();
+            if (!scoreRef.current.querySelector("svg path, svg use, svg rect")) {
+              throw new Error("OSMD не создал нотные SVG-элементы.");
+            }
+            osmdRef.current = osmd;
+            collectScoreClickPositions(osmd.cursor, data);
+            if (attempt.simplified) {
+              window.setTimeout(
+                () =>
+                  setNotice(
+                    "Партитура показана в совместимом режиме: декоративная разметка, мешавшая отображению, скрыта; ноты и звук сохранены.",
+                  ),
+                0,
+              );
+            }
+            window.setTimeout(() => setError(""), 0);
+            return;
+          } catch (caught) {
+            lastFailure = caught;
+          }
+        }
+        throw lastFailure;
       } catch (caught) {
         console.error("OSMD render failed", caught);
+        window.setTimeout(
+          () =>
+            setError(
+              caught instanceof Error
+                ? `Не удалось отобразить партитуру: ${caught.message}`
+                : "Не удалось отобразить партитуру в SVG.",
+            ),
+          0,
+        );
       }
     },
     [collectScoreClickPositions],
