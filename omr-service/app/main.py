@@ -246,21 +246,10 @@ def process_pdf(job_id: str) -> None:
                 timeout=30,
             )
 
-        prepared_pdf = directory / "prepared.pdf"
-        run_checked(
-            [
-                "img2pdf",
-                *[str(path) for path in sorted(cleaned_pages.glob("*.png"))],
-                "-o",
-                str(prepared_pdf),
-            ],
-            timeout=180,
-        )
-
         write_job(
             job_id,
             stage="recognizing",
-            message="Audiveris распознаёт нотные знаки и ритм…",
+            message="Audiveris читает исходный PDF и распознаёт ноты…",
         )
         command = [
             AUDIVERIS_BIN,
@@ -272,7 +261,7 @@ def process_pdf(job_id: str) -> None:
             "-output",
             str(output_dir),
             "--",
-            str(prepared_pdf),
+            str(source),
         ]
         process = subprocess.Popen(
             command,

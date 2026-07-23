@@ -462,10 +462,17 @@ kbd { border: 1px solid var(--line); background: var(--paper); padding: 2px 5px;
   background: var(--paper);
   box-shadow: var(--shadow);
   color: #111;
+  cursor: crosshair;
 }
 .paper svg { max-width: 100%; height: auto; }
 .dark .paper svg { filter: invert(.86) hue-rotate(160deg); }
-.paper .osmd-cursor { fill: var(--accent) !important; opacity: .22; }
+.paper .osmd-cursor {
+  fill: var(--accent) !important;
+  opacity: .18 !important;
+  pointer-events: none;
+  border-right: 2px solid var(--accent);
+  transition: left .08s linear, top .08s linear, width .08s linear;
+}
 .now-playing-note {
   position: sticky;
   bottom: -70px;

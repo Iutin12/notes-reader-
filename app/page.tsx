@@ -37,8 +37,36 @@ type OmrJob = {
   result_url: string | null;
   thumbnails: string[];
 };
+type FractionLike = {
+  RealValue?: number;
+  Numerator?: number;
+  Denominator?: number;
+  WholeValue?: number;
+};
+type OsmdIterator = {
+  EndReached?: boolean;
+  currentTimeStamp?: FractionLike;
+  CurrentSourceTimestamp?: FractionLike;
+  CurrentMeasureIndex?: number;
+};
+type OsmdCursor = {
+  reset(): void;
+  next(): void;
+  show(): void;
+  hide(): void;
+  update(): void;
+  Iterator?: OsmdIterator;
+  iterator?: OsmdIterator;
+  cursorElement?: HTMLElement;
+};
 type OsmdInstance = {
-  cursor: { reset(): void; next(): void; show(): void };
+  cursor: OsmdCursor;
+};
+type ScoreClickPosition = {
+  beat: number;
+  x: number;
+  y: number;
+  height: number;
 };
 
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
@@ -54,6 +82,25 @@ const OMR_STAGES: Array<{ stage: OmrStage; label: string }> = [
 
 const wait = (milliseconds: number) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+function fractionValue(fraction?: FractionLike) {
+  if (!fraction) return 0;
+  if (Number.isFinite(fraction.RealValue)) return fraction.RealValue || 0;
+  const denominator = fraction.Denominator || 1;
+  return (
+    (fraction.WholeValue || 0) +
+    (fraction.Numerator || 0) / denominator
+  );
+}
+
+function cursorBeat(cursor?: OsmdCursor) {
+  const iterator = cursor?.Iterator || cursor?.iterator;
+  return (
+    fractionValue(
+      iterator?.CurrentSourceTimestamp || iterator?.currentTimeStamp,
+    ) * 4
+  );
+}
 
 function Icon({ children }: { children: React.ReactNode }) {
   return <span aria-hidden="true">{children}</span>;
@@ -131,6 +178,7 @@ function midiToScore(buffer: ArrayBuffer, fileName: string): ScoreData {
     bpm,
     beatsPerMeasure,
     measureCount: Math.ceil(maxBeat / beatsPerMeasure),
+    totalBeats: maxBeat,
     parts,
     events: events.sort((a, b) => a.startBeat - b.startBeat),
   };
@@ -167,6 +215,8 @@ export default function Home() {
   const [pendingPdf, setPendingPdf] = useState<File | null>(null);
   const scoreRef = useRef<HTMLDivElement>(null);
   const osmdRef = useRef<OsmdInstance | null>(null);
+  const scoreClickPositionsRef = useRef<ScoreClickPosition[]>([]);
+  const cursorBeatRef = useRef(0);
   const synthRef = useRef(new PianoSynth());
   const timersRef = useRef<number[]>([]);
   const playStartedRef = useRef(0);
@@ -210,34 +260,84 @@ export default function Home() {
         setCurrentEvent(0);
         try {
           osmdRef.current?.cursor?.reset();
+          cursorBeatRef.current = 0;
         } catch {}
       }
     },
     [clearTimers],
   );
 
-  const renderScore = useCallback(async (data: ScoreData) => {
-    if (!scoreRef.current) return;
-    scoreRef.current.innerHTML = "";
-    osmdRef.current = null;
-    if (!data.sourceXml) return;
-    try {
-      const { OpenSheetMusicDisplay } = await import("opensheetmusicdisplay");
-      const osmd = new OpenSheetMusicDisplay(scoreRef.current, {
-        autoResize: true,
-        backend: "svg",
-        drawTitle: false,
-        drawingParameters: "compacttight",
-        followCursor: true,
-      });
-      await osmd.load(data.sourceXml);
-      osmd.render();
-      osmd.cursor.show();
-      osmdRef.current = osmd;
-    } catch (caught) {
-      console.error("OSMD render failed", caught);
+  const collectScoreClickPositions = useCallback((cursor: OsmdCursor) => {
+    const container = scoreRef.current;
+    if (!container) return;
+    const positions: ScoreClickPosition[] = [];
+    const containerRect = container.getBoundingClientRect();
+    cursor.reset();
+    cursor.show();
+    let guard = 0;
+    while (guard < 10000) {
+      cursor.update();
+      const element = cursor.cursorElement;
+      const rect = element?.getBoundingClientRect();
+      if (rect && rect.height > 0) {
+        positions.push({
+          beat: cursorBeat(cursor),
+          x: rect.right - containerRect.left + container.scrollLeft,
+          y:
+            rect.top -
+            containerRect.top +
+            container.scrollTop +
+            rect.height / 2,
+          height: rect.height,
+        });
+      }
+      const iterator = cursor.Iterator || cursor.iterator;
+      if (iterator?.EndReached) break;
+      const before = cursorBeat(cursor);
+      cursor.next();
+      if (cursorBeat(cursor) === before && iterator?.EndReached) break;
+      guard += 1;
     }
+    scoreClickPositionsRef.current = positions;
+    cursor.reset();
+    cursorBeatRef.current = 0;
+    cursor.show();
   }, []);
+
+  const renderScore = useCallback(
+    async (data: ScoreData) => {
+      if (!scoreRef.current) return;
+      scoreRef.current.innerHTML = "";
+      osmdRef.current = null;
+      scoreClickPositionsRef.current = [];
+      if (!data.sourceXml) return;
+      try {
+        const { OpenSheetMusicDisplay } = await import("opensheetmusicdisplay");
+        const osmd = new OpenSheetMusicDisplay(scoreRef.current, {
+          autoResize: true,
+          backend: "svg",
+          drawTitle: false,
+          drawingParameters: "compacttight",
+          followCursor: true,
+          cursorsOptions: [
+            {
+              type: 4,
+              color: "#2f6b57",
+              alpha: 0.16,
+              follow: true,
+            },
+          ],
+        });
+        await osmd.load(data.sourceXml);
+        osmd.render();
+        osmdRef.current = osmd;
+        collectScoreClickPositions(osmd.cursor);
+      } catch (caught) {
+        console.error("OSMD render failed", caught);
+      }
+    },
+    [collectScoreClickPositions],
+  );
 
   useEffect(() => {
     if (score) void renderScore(score);
@@ -440,12 +540,25 @@ export default function Home() {
     }
   }, [openScore]);
 
-  const advanceCursor = useCallback((index: number) => {
+  const advanceCursor = useCallback((targetBeat: number) => {
     const cursor = osmdRef.current?.cursor;
     if (!cursor) return;
     try {
-      cursor.reset();
-      for (let i = 0; i < index; i += 1) cursor.next();
+      if (targetBeat + 0.0001 < cursorBeatRef.current) {
+        cursor.reset();
+        cursorBeatRef.current = 0;
+      }
+      let guard = 0;
+      while (cursorBeat(cursor) + 0.0001 < targetBeat && guard < 10000) {
+        const iterator = cursor.Iterator || cursor.iterator;
+        if (iterator?.EndReached) break;
+        const before = cursorBeat(cursor);
+        cursor.next();
+        const after = cursorBeat(cursor);
+        if (after === before && iterator?.EndReached) break;
+        guard += 1;
+      }
+      cursorBeatRef.current = cursorBeat(cursor);
       cursor.show();
     } catch {}
   }, []);
@@ -455,7 +568,7 @@ export default function Home() {
       if (!score || !visibleEvents.length) return;
       clearTimers();
       synthRef.current.stopAll();
-      await synthRef.current.resume();
+      const audioContext = await synthRef.current.resume();
       synthRef.current.setVolume(volume);
       const startEvent = visibleEvents[Math.min(startIndex, visibleEvents.length - 1)];
       const beatSeconds = 60 / (score.bpm * speed);
@@ -483,29 +596,68 @@ export default function Home() {
           synthRef.current.click(beat === 0, beat * beatSeconds, metronomeVolume);
         }
       }
+
+      const audioStartTime = audioContext.currentTime + countDelay;
+      let nextAudioEvent = 0;
+      let nextMetronomeBeat = Math.ceil(baseBeat - 0.0001);
+      let audioScheduler: number | null = null;
+      const lastScheduled = scheduled[scheduled.length - 1];
+      const audioEndBeat = lastScheduled
+        ? lastScheduled.startBeat + lastScheduled.durationBeats
+        : baseBeat + 1;
+      const scheduleAudioWindow = () => {
+        const horizon = audioContext.currentTime + 1.5;
+        while (nextAudioEvent < scheduled.length) {
+          const event = scheduled[nextAudioEvent];
+          const targetTime =
+            audioStartTime + (event.startBeat - baseBeat) * beatSeconds;
+          if (targetTime > horizon) break;
+          const delay = Math.max(0, targetTime - audioContext.currentTime);
+          event.midi.forEach((midi) =>
+            synthRef.current.note(
+              midi,
+              durationSeconds(event, score.bpm, speed),
+              delay,
+              transpose,
+            ),
+          );
+          nextAudioEvent += 1;
+        }
+        if (metronome) {
+          while (nextMetronomeBeat <= audioEndBeat) {
+            const targetTime =
+              audioStartTime +
+              (nextMetronomeBeat - baseBeat) * beatSeconds;
+            if (targetTime > horizon) break;
+            synthRef.current.click(
+              Math.abs(nextMetronomeBeat % score.beatsPerMeasure) < 0.001,
+              Math.max(0, targetTime - audioContext.currentTime),
+              metronomeVolume,
+            );
+            nextMetronomeBeat += 1;
+          }
+        }
+        if (
+          audioScheduler !== null &&
+          nextAudioEvent >= scheduled.length &&
+          (!metronome || nextMetronomeBeat > audioEndBeat)
+        ) {
+          window.clearInterval(audioScheduler);
+          audioScheduler = null;
+        }
+      };
+      scheduleAudioWindow();
+      audioScheduler = window.setInterval(scheduleAudioWindow, 100);
+      timersRef.current.push(audioScheduler);
+
       scheduled.forEach((event) => {
         const offset = (event.startBeat - baseBeat) * beatSeconds + countDelay;
-        if (metronome && Math.abs(event.startBeat % 1) < 0.001) {
-          synthRef.current.click(
-            event.startBeat % score.beatsPerMeasure === 0,
-            offset,
-            metronomeVolume,
-          );
-        }
-        event.midi.forEach((midi) =>
-          synthRef.current.note(
-            midi,
-            durationSeconds(event, score.bpm, speed),
-            offset,
-            transpose,
-          ),
-        );
         const timer = window.setTimeout(() => {
           const index = visibleEvents.findIndex((item) => item.id === event.id);
           if (index >= 0) {
             setCurrentEvent(index);
             setPosition((event.startBeat * 60) / (score.bpm * speed));
-            advanceCursor(index);
+            advanceCursor(event.startBeat);
             if (autoScroll) {
               scoreRef.current
                 ?.querySelector(".osmd-cursor")
@@ -516,9 +668,10 @@ export default function Home() {
         timersRef.current.push(timer);
       });
 
-      const last = scheduled[scheduled.length - 1];
-      const finishAfter = last
-        ? (last.startBeat - baseBeat + last.durationBeats) * beatSeconds + countDelay
+      const finishAfter = lastScheduled
+        ? (lastScheduled.startBeat - baseBeat + lastScheduled.durationBeats) *
+            beatSeconds +
+          countDelay
         : beatSeconds;
       timersRef.current.push(
         window.setTimeout(() => {
@@ -585,7 +738,7 @@ export default function Home() {
           ? (visibleEvents[next].startBeat * 60) / (score.bpm * speed)
           : 0,
       );
-      advanceCursor(next);
+      advanceCursor(visibleEvents[next].startBeat);
       if (mode === "event") void scheduleFrom(next, true);
     },
     [
@@ -635,8 +788,46 @@ export default function Home() {
     if (index < 0) index = visibleEvents.length - 1;
     setCurrentEvent(index);
     setPosition(seconds);
-    advanceCursor(index);
+    advanceCursor(visibleEvents[index].startBeat);
   };
+
+  const playFromScoreClick = useCallback(
+    (event: React.MouseEvent<HTMLDivElement>) => {
+      const container = scoreRef.current;
+      if (!container || !score || !visibleEvents.length) return;
+      const positions = scoreClickPositionsRef.current;
+      if (!positions.length) return;
+      const containerRect = container.getBoundingClientRect();
+      const x =
+        event.clientX - containerRect.left + container.scrollLeft;
+      const y =
+        event.clientY - containerRect.top + container.scrollTop;
+      const sameSystem = positions.filter(
+        (position) =>
+          Math.abs(position.y - y) <= Math.max(38, position.height / 2 + 18),
+      );
+      const candidates = sameSystem.length ? sameSystem : positions;
+      const nearest = candidates.reduce((best, position) => {
+        const bestDistance =
+          Math.abs(best.x - x) + Math.abs(best.y - y) * 4;
+        const distance =
+          Math.abs(position.x - x) + Math.abs(position.y - y) * 4;
+        return distance < bestDistance ? position : best;
+      });
+      let index = visibleEvents.findIndex(
+        (item) => item.startBeat >= nearest.beat - 0.0001,
+      );
+      if (index < 0) index = visibleEvents.length - 1;
+      stop(false);
+      setCurrentEvent(index);
+      setPosition(
+        (visibleEvents[index].startBeat * 60) / (score.bpm * speed),
+      );
+      advanceCursor(visibleEvents[index].startBeat);
+      void scheduleFrom(index);
+    },
+    [advanceCursor, scheduleFrom, score, speed, stop, visibleEvents],
+  );
 
   const onDrop = (event: DragEvent) => {
     event.preventDefault();
@@ -905,10 +1096,19 @@ export default function Home() {
         <div className="score-area">
           <div className="score-toolbar">
             <div><span className="status-dot" />Такт {currentMeasure} из {score.measureCount}</div>
-            <div className="zoom-note">{score.bpm} BPM · {score.beatsPerMeasure}/4</div>
+            <div className="zoom-note">
+              {score.sourceXml && "Нажмите на ноты, чтобы играть отсюда · "}
+              {score.bpm} BPM
+            </div>
           </div>
           {score.sourceXml ? (
-            <div className="paper" ref={scoreRef} aria-label="Партитура" />
+            <div
+              className="paper"
+              ref={scoreRef}
+              aria-label="Партитура — нажмите на ноты, чтобы играть с этого места"
+              title="Нажмите на нужное место, чтобы начать воспроизведение"
+              onClick={playFromScoreClick}
+            />
           ) : (
             <div className="paper piano-roll">
               <div className="roll-heading"><b>Временная шкала MIDI</b><span>Нажмите событие, чтобы перейти к нему</span></div>
