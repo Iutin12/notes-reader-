@@ -97,6 +97,11 @@ export class PianoSynth {
     return context;
   }
 
+  currentTime() {
+    if (this.useNativeAudio()) return performance.now() / 1000;
+    return this.context?.currentTime ?? 0;
+  }
+
   private loadSamples() {
     if (!this.context) return Promise.resolve();
     if (!this.loadingSamples) {
@@ -197,7 +202,9 @@ export class PianoSynth {
           audio.pause();
           cleanup();
         },
-        Math.max(100, (duration + 0.7) * 1000),
+        // A piano string continues to resonate after the key is released.
+        // Keeping that tail makes phrases and chords blend like a composition.
+        Math.max(1600, (duration + 1.35) * 1000),
       );
       this.nativeTimers.add(stopTimer);
     }, Math.max(0, when * 1000));

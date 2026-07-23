@@ -632,9 +632,8 @@ export default function Home() {
       if (!score || !visibleEvents.length) return;
       clearTimers();
       synthRef.current.stopAll();
-      let audioContext: AudioContext;
       try {
-        audioContext = await synthRef.current.resume();
+        await synthRef.current.resume();
       } catch (caught) {
         setPlaying(false);
         setError(
@@ -673,7 +672,7 @@ export default function Home() {
         }
       }
 
-      const audioStartTime = audioContext.currentTime + countDelay;
+      const audioStartTime = synthRef.current.currentTime() + countDelay;
       let nextAudioEvent = 0;
       let nextMetronomeBeat = Math.ceil(baseBeat - 0.0001);
       let audioScheduler: number | null = null;
@@ -682,13 +681,14 @@ export default function Home() {
         ? lastScheduled.startBeat + lastScheduled.durationBeats
         : baseBeat + 1;
       const scheduleAudioWindow = () => {
-        const horizon = audioContext.currentTime + 3;
+        const schedulerNow = synthRef.current.currentTime();
+        const horizon = schedulerNow + 3;
         while (nextAudioEvent < scheduled.length) {
           const event = scheduled[nextAudioEvent];
           const targetTime =
             audioStartTime + (event.startBeat - baseBeat) * beatSeconds;
           if (targetTime > horizon) break;
-          const delay = Math.max(0, targetTime - audioContext.currentTime);
+          const delay = Math.max(0, targetTime - schedulerNow);
           event.midi.forEach((midi) =>
             synthRef.current.note(
               midi,
@@ -707,7 +707,7 @@ export default function Home() {
             if (targetTime > horizon) break;
             synthRef.current.click(
               Math.abs(nextMetronomeBeat % score.beatsPerMeasure) < 0.001,
-              Math.max(0, targetTime - audioContext.currentTime),
+              Math.max(0, targetTime - schedulerNow),
               metronomeVolume,
             );
             nextMetronomeBeat += 1;
