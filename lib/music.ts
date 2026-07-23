@@ -18,6 +18,7 @@ export type ScoreData = {
   bpm: number;
   beatsPerMeasure: number;
   measureCount: number;
+  totalBeats?: number;
   events: MusicEvent[];
   parts: Array<{ id: string; name: string }>;
   sourceXml?: string;
@@ -79,9 +80,10 @@ export function parseMusicXml(xml: string): ScoreData {
     const sound = doc.querySelector("sound[tempo]");
     bpm = Number(sound?.getAttribute("tempo")) || 96;
   }
-  let beatsPerMeasure = Number(text(doc, "time beats", "4")) || 4;
+  let beatsPerMeasure = 4;
   const events: MusicEvent[] = [];
   let measureCount = 0;
+  let totalBeats = 0;
 
   doc.querySelectorAll(":scope > part, score-partwise > part").forEach(
     (partNode) => {
@@ -89,6 +91,7 @@ export function parseMusicXml(xml: string): ScoreData {
       const partName = partNames.get(partId) || partId;
       let divisions = 1;
       let absoluteBeat = 0;
+      let measureBeats = 4;
 
       partNode.querySelectorAll(":scope > measure").forEach((measureNode, mi) => {
         const measure = Number(measureNode.getAttribute("number")) || mi + 1;
@@ -96,29 +99,46 @@ export function parseMusicXml(xml: string): ScoreData {
         divisions =
           Number(text(measureNode, "attributes divisions", String(divisions))) ||
           divisions;
-        beatsPerMeasure =
-          Number(
-            text(
-              measureNode,
-              "attributes time beats",
-              String(beatsPerMeasure),
-            ),
-          ) || beatsPerMeasure;
+        const beats =
+          Number(text(measureNode, "attributes time beats", "0")) || 0;
+        const beatType =
+          Number(text(measureNode, "attributes time beat-type", "0")) || 0;
+        if (beats && beatType) measureBeats = beats * (4 / beatType);
+        beatsPerMeasure = measureBeats;
         const tempo = measureNode.querySelector("sound[tempo]")?.getAttribute("tempo");
         if (tempo && events.length === 0) bpm = Number(tempo) || bpm;
 
-        let cursor = absoluteBeat;
-        let previousStart = cursor;
-        measureNode.querySelectorAll(":scope > note").forEach((note, ni) => {
-          const duration =
-            (Number(text(note, "duration", String(divisions))) || divisions) /
-            divisions;
+        const measureStart = absoluteBeat;
+        let cursor = 0;
+        let furthestCursor = 0;
+        let previousStart = 0;
+        let noteIndex = 0;
+
+        [...measureNode.children].forEach((child) => {
+          const tag = child.localName;
+          if (tag === "backup" || tag === "forward") {
+            const rawDuration = Number(text(child, "duration", "0")) || 0;
+            const duration = rawDuration / divisions;
+            cursor =
+              tag === "backup"
+                ? Math.max(0, cursor - duration)
+                : cursor + duration;
+            furthestCursor = Math.max(furthestCursor, cursor);
+            return;
+          }
+          if (tag !== "note") return;
+
+          const note = child;
+          const rawDuration = Number(text(note, ":scope > duration", "0")) || 0;
+          const duration = rawDuration / divisions;
           const isChord = Boolean(note.querySelector(":scope > chord"));
           const isRest = Boolean(note.querySelector(":scope > rest"));
-          const startBeat = isChord ? previousStart : cursor;
+          const relativeStart = isChord ? previousStart : cursor;
+          const startBeat = measureStart + relativeStart;
           if (!isChord) {
-            previousStart = startBeat;
+            previousStart = relativeStart;
             cursor += duration;
+            furthestCursor = Math.max(furthestCursor, cursor);
           }
           const staff = Number(text(note, "staff", "1")) || 1;
           const voice = text(note, "voice", "1");
@@ -148,7 +168,7 @@ export function parseMusicXml(xml: string): ScoreData {
             existing.durationBeats = Math.max(existing.durationBeats, duration);
           } else {
             events.push({
-              id: `${partId}-m${measure}-n${ni}`,
+              id: `${partId}-m${measure}-n${noteIndex}`,
               measure,
               partId,
               partName,
@@ -161,19 +181,29 @@ export function parseMusicXml(xml: string): ScoreData {
               isRest,
             });
           }
+          noteIndex += 1;
         });
-        absoluteBeat += beatsPerMeasure;
+        const implicit = measureNode.getAttribute("implicit") === "yes";
+        absoluteBeat += implicit
+          ? Math.max(furthestCursor, 0)
+          : Math.max(measureBeats, furthestCursor);
       });
+      totalBeats = Math.max(totalBeats, absoluteBeat);
     },
   );
 
   if (!events.length) throw new Error("В партитуре не найдено музыкальных событий.");
+  totalBeats = Math.max(
+    totalBeats,
+    ...events.map((event) => event.startBeat + event.durationBeats),
+  );
   return {
     title,
     composer,
     bpm,
     beatsPerMeasure,
     measureCount,
+    totalBeats,
     events: events.sort(
       (a, b) => a.startBeat - b.startBeat || a.partId.localeCompare(b.partId),
     ),
@@ -191,7 +221,13 @@ export function durationSeconds(event: MusicEvent, bpm: number, speed = 1) {
 }
 
 export function scoreDuration(score: ScoreData, speed = 1) {
-  return (score.measureCount * score.beatsPerMeasure * 60) / (score.bpm * speed);
+  const totalBeats =
+    score.totalBeats ??
+    Math.max(
+      score.measureCount * score.beatsPerMeasure,
+      ...score.events.map((event) => event.startBeat + event.durationBeats),
+    );
+  return (totalBeats * 60) / (score.bpm * speed);
 }
 
 export function eventsInRange(
