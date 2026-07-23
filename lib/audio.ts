@@ -18,7 +18,7 @@ export class PianoSynth {
   private loadingSamples: Promise<void> | null = null;
   private volume = 0.7;
 
-  async resume() {
+  private ensureContext() {
     if (!this.context) {
       this.context = new AudioContext();
       this.master = this.context.createGain();
@@ -32,11 +32,33 @@ export class PianoSynth {
       this.master.connect(this.compressor);
       this.compressor.connect(this.context.destination);
     }
+    return this.context;
+  }
+
+  preload() {
+    this.ensureContext();
+    return this.loadSamples();
+  }
+
+  async resume() {
+    const context = this.ensureContext();
     // Safari and some Chromium configurations only allow resume() while the
     // original click is still active. Do this before any network/decode await.
-    if (this.context.state === "suspended") await this.context.resume();
+    if (context.state !== "running") await context.resume();
+
+    // Start a silent source during the original user gesture. Some browsers
+    // accept resume() but suspend the context again if no source was started.
+    const unlock = context.createOscillator();
+    const unlockGain = context.createGain();
+    unlockGain.gain.value = 0.000001;
+    unlock.connect(unlockGain);
+    unlockGain.connect(context.destination);
+    unlock.start();
+    unlock.stop(context.currentTime + 0.02);
+
     await this.loadSamples();
-    return this.context;
+    if (context.state !== "running") await context.resume();
+    return context;
   }
 
   private loadSamples() {
@@ -44,14 +66,22 @@ export class PianoSynth {
     if (!this.loadingSamples) {
       this.loadingSamples = Promise.all(
         PIANO_SAMPLES.map(async ([name, midi]) => {
-          const response = await fetch(`/audio/piano/${name}.mp3`);
-          if (!response.ok) throw new Error(`Piano sample ${name} is unavailable`);
-          const buffer = await this.context!.decodeAudioData(
-            await response.arrayBuffer(),
-          );
-          this.samples.set(midi, buffer);
+          try {
+            const response = await fetch(`/audio/piano/${name}.mp3`);
+            if (!response.ok) return;
+            const buffer = await this.context!.decodeAudioData(
+              await response.arrayBuffer(),
+            );
+            this.samples.set(midi, buffer);
+          } catch {
+            // A single unsupported/corrupt sample must not mute the instrument.
+          }
         }),
-      ).then(() => undefined);
+      ).then(() => {
+        if (this.samples.size === 0) {
+          throw new Error("Браузер не смог декодировать фортепианные сэмплы.");
+        }
+      });
     }
     return this.loadingSamples;
   }

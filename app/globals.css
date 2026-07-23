@@ -466,22 +466,13 @@ kbd { border: 1px solid var(--line); background: var(--paper); padding: 2px 5px;
   cursor: crosshair;
 }
 .playback-highlight {
-  position: absolute;
-  z-index: 12;
-  border: 2px solid rgba(28, 112, 75, .7);
-  border-radius: 7px;
-  background: rgba(62, 184, 126, .34);
-  box-shadow: 0 0 18px rgba(26, 119, 78, .32);
-  pointer-events: none;
-  transition: left .07s linear, top .07s linear, width .07s linear,
-    height .07s linear;
+  display: none !important;
 }
 .playback-highlight[hidden] { display: none; }
 .paper svg { max-width: 100%; height: auto; }
 .dark .paper svg { filter: invert(.86) hue-rotate(160deg); }
 .paper .osmd-cursor {
-  fill: var(--accent) !important;
-  opacity: .3 !important;
+  opacity: 0 !important;
   pointer-events: none;
   border-right: 2px solid var(--accent);
   transition: left .08s linear, top .08s linear, width .08s linear;

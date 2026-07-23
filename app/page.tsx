@@ -57,6 +57,10 @@ type OsmdCursor = {
   Iterator?: OsmdIterator;
   iterator?: OsmdIterator;
   cursorElement?: HTMLElement;
+  GNotesUnderCursor?(): GraphicalNoteLike[];
+};
+type GraphicalNoteLike = {
+  setColor(color: string, options: Record<string, boolean>): void;
 };
 type OsmdInstance = {
   cursor: OsmdCursor;
@@ -216,6 +220,7 @@ export default function Home() {
   const osmdRef = useRef<OsmdInstance | null>(null);
   const scoreClickPositionsRef = useRef<ScoreClickPosition[]>([]);
   const cursorBeatRef = useRef(0);
+  const highlightedNotesRef = useRef<GraphicalNoteLike[]>([]);
   const synthRef = useRef(new PianoSynth());
   const timersRef = useRef<number[]>([]);
   const playStartedRef = useRef(0);
@@ -225,6 +230,7 @@ export default function Home() {
   >(() => Promise.resolve());
 
   useEffect(() => {
+    void synthRef.current.preload().catch(() => {});
     const timer = window.setTimeout(() => {
       setSaved(loadSaved());
       const storedTheme = localStorage.getItem("notera-theme");
@@ -258,6 +264,16 @@ export default function Home() {
         setPosition(0);
         setCurrentEvent(0);
         try {
+          highlightedNotesRef.current.forEach((note) =>
+            note.setColor("#000000", {
+              applyToNoteheads: true,
+              applyToStem: true,
+              applyToFlag: true,
+              applyToBeams: true,
+              applyToLedgerLines: true,
+            }),
+          );
+          highlightedNotesRef.current = [];
           osmdRef.current?.cursor?.reset();
           cursorBeatRef.current = 0;
         } catch {}
@@ -569,6 +585,26 @@ export default function Home() {
       }
       cursorBeatRef.current = cursorBeat(cursor);
       cursor.show();
+      highlightedNotesRef.current.forEach((note) =>
+        note.setColor("#000000", {
+          applyToNoteheads: true,
+          applyToStem: true,
+          applyToFlag: true,
+          applyToBeams: true,
+          applyToLedgerLines: true,
+        }),
+      );
+      const currentNotes = cursor.GNotesUnderCursor?.() || [];
+      currentNotes.forEach((note) =>
+        note.setColor("#15945b", {
+          applyToNoteheads: true,
+          applyToStem: true,
+          applyToFlag: true,
+          applyToBeams: true,
+          applyToLedgerLines: true,
+        }),
+      );
+      highlightedNotesRef.current = currentNotes;
       const positions = scoreClickPositionsRef.current;
       const position = positions.reduce(
         (nearest, candidate) =>
@@ -596,7 +632,19 @@ export default function Home() {
       if (!score || !visibleEvents.length) return;
       clearTimers();
       synthRef.current.stopAll();
-      const audioContext = await synthRef.current.resume();
+      let audioContext: AudioContext;
+      try {
+        audioContext = await synthRef.current.resume();
+      } catch (caught) {
+        setPlaying(false);
+        setError(
+          caught instanceof Error
+            ? `Не удалось включить звук: ${caught.message}`
+            : "Браузер заблокировал воспроизведение звука.",
+        );
+        return;
+      }
+      setError("");
       synthRef.current.setVolume(volume);
       const startEvent = visibleEvents[Math.min(startIndex, visibleEvents.length - 1)];
       const beatSeconds = 60 / (score.bpm * speed);
