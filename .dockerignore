@@ -5,3 +5,4 @@ dist
 .wrangler
 .env
 npm-debug.log
+omr-data

@@ -1,10 +1,48 @@
 services:
-  notera:
+  gateway:
+    image: nginx:1.27-alpine
+    ports:
+      - "${NOTERA_PORT:-3000}:80"
+    volumes:
+      - ./nginx/notera.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      web:
+        condition: service_started
+      omr:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
     build:
       context: .
-    ports:
-      - "3000:3000"
-    env_file:
-      - path: .env
-        required: false
+      dockerfile: Dockerfile
+    expose:
+      - "3000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
     restart: unless-stopped
+
+  omr:
+    platform: ${AUDIVERIS_PLATFORM:-linux/amd64}
+    build:
+      context: ./omr-service
+      dockerfile: Dockerfile
+      args:
+        AUDIVERIS_VERSION: ${AUDIVERIS_VERSION:-5.10.2}
+    expose:
+      - "8000"
+    environment:
+      OMR_DATA_DIR: /data/jobs
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-52428800}
+      MAX_PDF_PAGES: ${MAX_PDF_PAGES:-40}
+      OMR_TIMEOUT_SECONDS: ${OMR_TIMEOUT_SECONDS:-900}
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--Djava.awt.headless=true -Xmx4g}
+    volumes:
+      - omr-data:/data/jobs
+    mem_limit: ${OMR_MEMORY_LIMIT:-6g}
+    cpus: ${OMR_CPU_LIMIT:-2.0}
+    restart: unless-stopped
+
+volumes:
+  omr-data:

@@ -3,6 +3,7 @@
 import { ChangeEvent, DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Midi } from "@tonejs/midi";
 import JSZip from "jszip";
+import Image from "next/image";
 import { PianoSynth } from "../lib/audio";
 import {
   MusicEvent,
@@ -17,12 +18,42 @@ import {
 
 type Mode = "continuous" | "event" | "measure" | "fragment";
 type SavedScore = { name: string; xml: string; savedAt: number };
+type OmrStage =
+  | "uploading"
+  | "queued"
+  | "preparing"
+  | "recognizing"
+  | "building"
+  | "ready"
+  | "error"
+  | "cancelled";
+type OmrJob = {
+  id: string;
+  file_name: string;
+  status: string;
+  stage: OmrStage;
+  message: string;
+  page_count: number | null;
+  result_url: string | null;
+  thumbnails: string[];
+};
 type OsmdInstance = {
   cursor: { reset(): void; next(): void; show(): void };
 };
 
 const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const MAX_FILE_SIZE = 25 * 1024 * 1024;
+const PDF_MAX_FILE_SIZE = 50 * 1024 * 1024;
+const OMR_STAGES: Array<{ stage: OmrStage; label: string }> = [
+  { stage: "uploading", label: "Загрузка" },
+  { stage: "preparing", label: "Подготовка страниц" },
+  { stage: "recognizing", label: "Распознавание" },
+  { stage: "building", label: "Создание партитуры" },
+  { stage: "ready", label: "Готово" },
+];
+
+const wait = (milliseconds: number) =>
+  new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
 function Icon({ children }: { children: React.ReactNode }) {
   return <span aria-hidden="true">{children}</span>;
@@ -132,6 +163,8 @@ export default function Home() {
   const [autoScroll, setAutoScroll] = useState(true);
   const [countIn, setCountIn] = useState(0);
   const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [omrJob, setOmrJob] = useState<OmrJob | null>(null);
+  const [pendingPdf, setPendingPdf] = useState<File | null>(null);
   const scoreRef = useRef<HTMLDivElement>(null);
   const osmdRef = useRef<OsmdInstance | null>(null);
   const synthRef = useRef(new PianoSynth());
@@ -225,12 +258,110 @@ export default function Home() {
     );
   }, [stop]);
 
+  const processPdf = useCallback(
+    async (file: File) => {
+      if (file.size > PDF_MAX_FILE_SIZE) {
+        setError("PDF больше 50 МБ. Уменьшите файл и попробуйте снова.");
+        return;
+      }
+      setPendingPdf(file);
+      setError("");
+      setOmrJob({
+        id: "",
+        file_name: file.name,
+        status: "uploading",
+        stage: "uploading",
+        message: "Передаём PDF в изолированный сервис распознавания…",
+        page_count: null,
+        result_url: null,
+        thumbnails: [],
+      });
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        const upload = await fetch("/api/omr/jobs", {
+          method: "POST",
+          body: form,
+        });
+        if (!upload.ok) {
+          let detail = `Сервис распознавания ответил с кодом ${upload.status}.`;
+          try {
+            const body = (await upload.json()) as { detail?: string };
+            if (body.detail) detail = body.detail;
+          } catch {}
+          throw new Error(detail);
+        }
+        let job = (await upload.json()) as OmrJob;
+        setOmrJob(job);
+
+        while (!["ready", "error", "cancelled"].includes(job.status)) {
+          await wait(1500);
+          const statusResponse = await fetch(`/api/omr/jobs/${job.id}`, {
+            cache: "no-store",
+          });
+          if (!statusResponse.ok) {
+            throw new Error("Не удалось получить состояние задачи распознавания.");
+          }
+          job = (await statusResponse.json()) as OmrJob;
+          setOmrJob(job);
+        }
+        if (job.status === "error") throw new Error(job.message);
+        if (job.status === "cancelled") return;
+        if (!job.result_url) {
+          throw new Error("Сервис завершил задачу без ссылки на MusicXML.");
+        }
+        const result = await fetch(job.result_url, { cache: "no-store" });
+        if (!result.ok) throw new Error("Не удалось получить готовый MusicXML.");
+        const xml = await result.text();
+        const data = parseMusicXml(xml);
+        openScore(data, file.name);
+        setNotice(
+          "PDF распознан автоматически. Результат может содержать ошибки — проверьте высоту и длительность нот.",
+        );
+        const entry = { name: data.title, xml, savedAt: Date.now() };
+        const next = [
+          entry,
+          ...loadSaved().filter((item) => item.name !== data.title),
+        ].slice(0, 5);
+        localStorage.setItem("notera-scores", JSON.stringify(next));
+        setSaved(next);
+        setOmrJob(null);
+      } catch (caught) {
+        const message =
+          caught instanceof Error ? caught.message : "Не удалось распознать PDF.";
+        setOmrJob((current) => ({
+          id: current?.id || "",
+          file_name: file.name,
+          status: "error",
+          stage: "error",
+          message:
+            message.includes("<!DOCTYPE") || message.includes("Unexpected token")
+              ? "OMR-сервис недоступен. Запустите приложение через Docker Compose."
+              : message,
+          page_count: current?.page_count || null,
+          result_url: null,
+          thumbnails: current?.thumbnails || [],
+        }));
+      }
+    },
+    [openScore],
+  );
+
   const processFile = useCallback(
     async (file: File) => {
       setError("");
       setNotice("");
-      if (file.size > MAX_FILE_SIZE) {
-        setError("Файл больше 25 МБ. Выберите файл меньшего размера.");
+      if (
+        file.size >
+        (file.name.toLowerCase().endsWith(".pdf")
+          ? PDF_MAX_FILE_SIZE
+          : MAX_FILE_SIZE)
+      ) {
+        setError(
+          file.name.toLowerCase().endsWith(".pdf")
+            ? "PDF больше 50 МБ. Выберите файл меньшего размера."
+            : "Файл больше 25 МБ. Выберите файл меньшего размера.",
+        );
         return;
       }
       const extension = file.name.split(".").pop()?.toLowerCase();
@@ -241,10 +372,7 @@ export default function Home() {
       setLoading(true);
       try {
         if (extension === "pdf") {
-          setFileName(file.name);
-          setError(
-            "PDF требует серверного OMR-распознавания. В облачной демонстрации Audiveris не запущен; используйте MusicXML/MIDI или локальный Docker-контур, описанный в README.",
-          );
+          await processPdf(file);
           return;
         }
         if (extension === "mid" || extension === "midi") {
@@ -280,8 +408,22 @@ export default function Home() {
         setLoading(false);
       }
     },
-    [openScore],
+    [openScore, processPdf],
   );
+
+  const cancelOmr = async () => {
+    const current = omrJob;
+    if (current?.id) {
+      try {
+        const response = await fetch(`/api/omr/jobs/${current.id}`, {
+          method: "DELETE",
+        });
+        if (response.ok) setOmrJob((await response.json()) as OmrJob);
+      } catch {}
+    }
+    setOmrJob(null);
+    setPendingPdf(null);
+  };
 
   const openDemo = useCallback(async () => {
     setLoading(true);
@@ -525,6 +667,92 @@ export default function Home() {
     URL.revokeObjectURL(link.href);
   };
 
+  if (!score && omrJob) {
+    const currentStageIndex = OMR_STAGES.findIndex(
+      (item) => item.stage === omrJob.stage,
+    );
+    const failed = omrJob.stage === "error";
+    return (
+      <main className={`processing-page ${theme}`}>
+        <header className="landing-header">
+          <button className="brand" onClick={() => void cancelOmr()}>
+            <span className="brand-mark">♪</span>
+            <span>Нотера</span>
+          </button>
+          <span className="processing-file">{omrJob.file_name}</span>
+        </header>
+        <section className="processing-card">
+          <div className={`processing-symbol ${failed ? "failed" : ""}`}>
+            {failed ? "!" : "𝄞"}
+          </div>
+          <span className="eyebrow">
+            {failed ? "Обработка остановлена" : "Распознавание PDF"}
+          </span>
+          <h1>{failed ? "Не удалось прочитать ноты" : "Превращаем PDF в партитуру"}</h1>
+          <p className={failed ? "processing-error" : ""}>{omrJob.message}</p>
+
+          {!failed && (
+            <ol className="processing-steps">
+              {OMR_STAGES.map((item, index) => (
+                <li
+                  key={item.stage}
+                  className={
+                    index < currentStageIndex
+                      ? "done"
+                      : index === currentStageIndex
+                        ? "active"
+                        : ""
+                  }
+                >
+                  <span>{index < currentStageIndex ? "✓" : index + 1}</span>
+                  <b>{item.label}</b>
+                </li>
+              ))}
+            </ol>
+          )}
+
+          {omrJob.thumbnails.length > 0 && (
+            <div className="page-thumbnails">
+              {omrJob.thumbnails.map((source, index) => (
+                <figure key={source}>
+                  <Image
+                    src={source}
+                    alt={`Страница ${index + 1}`}
+                    width={320}
+                    height={420}
+                    unoptimized
+                  />
+                  <figcaption>{index + 1}</figcaption>
+                </figure>
+              ))}
+              {(omrJob.page_count || 0) > 6 && (
+                <div className="more-pages">+{(omrJob.page_count || 0) - 6}</div>
+              )}
+            </div>
+          )}
+
+          <div className="processing-actions">
+            {failed && pendingPdf && (
+              <button
+                className="primary-button"
+                onClick={() => void processPdf(pendingPdf)}
+              >
+                Запустить снова
+              </button>
+            )}
+            <button className="ghost-button" onClick={() => void cancelOmr()}>
+              {failed ? "Выбрать другой файл" : "Отменить обработку"}
+            </button>
+          </div>
+          <small>
+            Audiveris работает локально в Docker. Файл не передаётся сторонним
+            сервисам.
+          </small>
+        </section>
+      </main>
+    );
+  }
+
   if (!score) {
     return (
       <main className={`landing ${theme}`} data-testid="landing">
@@ -561,7 +789,7 @@ export default function Home() {
           >
             <div className="upload-icon"><span>♫</span></div>
             <h2>{loading ? "Открываем партитуру…" : "Перетащите ноты сюда"}</h2>
-            <p>MusicXML, MXL или MIDI до 25 МБ</p>
+            <p>PDF до 50 МБ · MusicXML, MXL или MIDI до 25 МБ</p>
             <label className="primary-button">
               <input type="file" accept=".musicxml,.xml,.mxl,.mid,.midi,.pdf" onChange={onFile} />
               Выбрать файл
@@ -578,7 +806,7 @@ export default function Home() {
           <div><b>MusicXML</b><small>прямая загрузка</small></div>
           <div><b>MXL</b><small>сжатая партитура</small></div>
           <div><b>MIDI</b><small>временная шкала</small></div>
-          <div className="muted"><b>PDF</b><small>через локальный OMR</small></div>
+          <div><b>PDF</b><small>Audiveris OMR</small></div>
         </section>
 
         {saved.length > 0 && (
