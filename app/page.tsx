@@ -3,7 +3,6 @@
 import { ChangeEvent, DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Midi } from "@tonejs/midi";
 import JSZip from "jszip";
-import Image from "next/image";
 import { PianoSynth } from "../lib/audio";
 import {
   MusicEvent,
@@ -262,6 +261,9 @@ export default function Home() {
           osmdRef.current?.cursor?.reset();
           cursorBeatRef.current = 0;
         } catch {}
+        const highlight =
+          scoreRef.current?.querySelector<HTMLElement>(".playback-highlight");
+        if (highlight) highlight.hidden = true;
       }
     },
     [clearTimers],
@@ -302,6 +304,13 @@ export default function Home() {
     cursor.reset();
     cursorBeatRef.current = 0;
     cursor.show();
+    const previous = container.querySelector(".playback-highlight");
+    previous?.remove();
+    const highlight = document.createElement("div");
+    highlight.className = "playback-highlight";
+    highlight.hidden = true;
+    highlight.setAttribute("aria-hidden", "true");
+    container.appendChild(highlight);
   }, []);
 
   const renderScore = useCallback(
@@ -560,6 +569,25 @@ export default function Home() {
       }
       cursorBeatRef.current = cursorBeat(cursor);
       cursor.show();
+      const positions = scoreClickPositionsRef.current;
+      const position = positions.reduce(
+        (nearest, candidate) =>
+          Math.abs(candidate.beat - targetBeat) <
+          Math.abs(nearest.beat - targetBeat)
+            ? candidate
+            : nearest,
+        positions[0],
+      );
+      const highlight =
+        scoreRef.current?.querySelector<HTMLElement>(".playback-highlight");
+      if (highlight && position) {
+        const width = Math.max(22, Math.min(52, position.height * 0.15));
+        highlight.hidden = false;
+        highlight.style.left = `${position.x - width / 2}px`;
+        highlight.style.top = `${position.y - position.height / 2}px`;
+        highlight.style.width = `${width}px`;
+        highlight.style.height = `${position.height}px`;
+      }
     } catch {}
   }, []);
 
@@ -606,7 +634,7 @@ export default function Home() {
         ? lastScheduled.startBeat + lastScheduled.durationBeats
         : baseBeat + 1;
       const scheduleAudioWindow = () => {
-        const horizon = audioContext.currentTime + 1.5;
+        const horizon = audioContext.currentTime + 3;
         while (nextAudioEvent < scheduled.length) {
           const event = scheduled[nextAudioEvent];
           const targetTime =
@@ -647,7 +675,7 @@ export default function Home() {
         }
       };
       scheduleAudioWindow();
-      audioScheduler = window.setInterval(scheduleAudioWindow, 100);
+      audioScheduler = window.setInterval(scheduleAudioWindow, 50);
       timersRef.current.push(audioScheduler);
 
       scheduled.forEach((event) => {
@@ -906,12 +934,14 @@ export default function Home() {
             <div className="page-thumbnails">
               {omrJob.thumbnails.map((source, index) => (
                 <figure key={source}>
-                  <Image
+                  {/* Generated job images change while the API is polled; using a
+                      plain image avoids caching an early 404 in an optimizer. */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
                     src={source}
                     alt={`Страница ${index + 1}`}
                     width={320}
                     height={420}
-                    unoptimized
                   />
                   <figcaption>{index + 1}</figcaption>
                 </figure>

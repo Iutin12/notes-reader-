@@ -82,6 +82,7 @@ def public_job(job: dict[str, Any]) -> JobPublic:
     thumbnails = [
         f"/api/omr/jobs/{job_id}/pages/{number}/thumbnail"
         for number in range(1, min(page_count or 0, 6) + 1)
+        if (job_dir(job_id) / f"thumb-{number}.jpg").exists()
     ]
     return JobPublic(
         **{
