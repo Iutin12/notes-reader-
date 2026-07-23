@@ -74,6 +74,38 @@ function firstTempo(doc: Document) {
   return 96;
 }
 
+function writtenDurationBeats(note: Element) {
+  const values: Record<string, number> = {
+    longa: 16,
+    breve: 8,
+    whole: 4,
+    half: 2,
+    quarter: 1,
+    eighth: 0.5,
+    "16th": 0.25,
+    "32nd": 0.125,
+    "64th": 0.0625,
+    "128th": 0.03125,
+  };
+  let duration = values[text(note, ":scope > type")] || 0;
+  if (!duration) return 0;
+
+  // Every dot adds half of the preceding value: half. = 3 beats,
+  // quarter.. = 1.75 beats, and so on.
+  let addition = duration / 2;
+  note.querySelectorAll(":scope > dot").forEach(() => {
+    duration += addition;
+    addition /= 2;
+  });
+
+  const actualNotes = Number(text(note, ":scope > time-modification actual-notes", "0"));
+  const normalNotes = Number(text(note, ":scope > time-modification normal-notes", "0"));
+  if (actualNotes > 0 && normalNotes > 0) {
+    duration *= normalNotes / actualNotes;
+  }
+  return duration;
+}
+
 export function parseMusicXml(xml: string): ScoreData {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
   if (doc.querySelector("parsererror")) {
@@ -163,7 +195,13 @@ export function parseMusicXml(xml: string): ScoreData {
 
           const note = child;
           const rawDuration = Number(text(note, ":scope > duration", "0")) || 0;
-          const duration = rawDuration / divisions;
+          const encodedDuration = rawDuration / divisions;
+          const notationDuration = writtenDurationBeats(note);
+          // MusicXML's <duration> is authoritative when it is correct. Some
+          // OMR files, however, assign a quarter's numeric duration to a
+          // clearly written half/whole note. Never shorten a written note in
+          // that case: it must continue sounding until its visual value ends.
+          const duration = Math.max(encodedDuration, notationDuration);
           const isChord = Boolean(note.querySelector(":scope > chord"));
           const isRest = Boolean(note.querySelector(":scope > rest"));
           const relativeStart = isChord ? previousStart : cursor;
