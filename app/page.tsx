@@ -16,7 +16,7 @@ import {
 } from "../lib/music";
 
 type Mode = "continuous" | "event" | "measure" | "fragment";
-type SavedScore = { name: string; xml: string; savedAt: number };
+type SavedScore = { name: string; fileName: string; xml: string; bpm?: number; savedAt: number };
 type OmrStage =
   | "uploading"
   | "queued"
@@ -33,6 +33,7 @@ type OmrJob = {
   stage: OmrStage;
   message: string;
   page_count: number | null;
+  detected_bpm: number | null;
   result_url: string | null;
   thumbnails: string[];
 };
@@ -124,7 +125,16 @@ function Icon({ children }: { children: React.ReactNode }) {
 function loadSaved(): SavedScore[] {
   if (typeof window === "undefined") return [];
   try {
-    return JSON.parse(localStorage.getItem("notera-scores") || "[]");
+    const parsed = JSON.parse(localStorage.getItem("notera-scores") || "[]") as Partial<SavedScore>[];
+    return parsed
+      .filter((item) => typeof item.name === "string" && typeof item.xml === "string" && typeof item.savedAt === "number")
+      .map((item) => ({
+        name: item.name!,
+        fileName: item.fileName || `${item.name}.musicxml`,
+        xml: item.xml!,
+        bpm: item.bpm,
+        savedAt: item.savedAt!,
+      }));
   } catch {
     return [];
   }
@@ -446,6 +456,26 @@ export default function Home() {
     );
   }, [stop]);
 
+  const persistScore = useCallback((data: ScoreData, sourceName: string, xml: string) => {
+    const entry: SavedScore = {
+      name: displayNameFromFile(sourceName),
+      fileName: sourceName,
+      xml,
+      bpm: data.bpm,
+      savedAt: Date.now(),
+    };
+    const next = [
+      entry,
+      ...loadSaved().filter((item) => item.fileName !== sourceName && item.name !== entry.name),
+    ].slice(0, 10);
+    try {
+      localStorage.setItem("notera-scores", JSON.stringify(next));
+      setSaved(next);
+    } catch {
+      setNotice("Партитура открыта, но браузер не смог сохранить её на этом устройстве.");
+    }
+  }, []);
+
   const processPdf = useCallback(
     async (file: File) => {
       if (file.size > PDF_MAX_FILE_SIZE) {
@@ -461,6 +491,7 @@ export default function Home() {
         stage: "uploading",
         message: "Передаём PDF в изолированный сервис распознавания…",
         page_count: null,
+        detected_bpm: null,
         result_url: null,
         thumbnails: [],
       });
@@ -502,17 +533,14 @@ export default function Home() {
         if (!result.ok) throw new Error("Не удалось получить готовый MusicXML.");
         const xml = await result.text();
         const data = parseMusicXml(xml);
+        if (job.detected_bpm) data.bpm = job.detected_bpm;
         openScore(data, file.name);
         setNotice(
-          "PDF распознан автоматически. Результат может содержать ошибки — проверьте высоту и длительность нот.",
+          job.detected_bpm
+            ? `PDF распознан автоматически. Темп ${job.detected_bpm} BPM считан из первой страницы; проверьте высоту и длительность нот.`
+            : "PDF распознан автоматически. Результат может содержать ошибки — проверьте высоту и длительность нот.",
         );
-        const entry = { name: data.title, xml, savedAt: Date.now() };
-        const next = [
-          entry,
-          ...loadSaved().filter((item) => item.name !== data.title),
-        ].slice(0, 5);
-        localStorage.setItem("notera-scores", JSON.stringify(next));
-        setSaved(next);
+        persistScore(data, file.name, xml);
         setOmrJob(null);
       } catch (caught) {
         const message =
@@ -527,12 +555,13 @@ export default function Home() {
               ? "OMR-сервис недоступен. Запустите приложение через Docker Compose."
               : message,
           page_count: current?.page_count || null,
+          detected_bpm: current?.detected_bpm || null,
           result_url: null,
           thumbnails: current?.thumbnails || [],
         }));
       }
     },
-    [openScore],
+    [openScore, persistScore],
   );
 
   const processFile = useCallback(
@@ -586,17 +615,14 @@ export default function Home() {
         }
         const data = parseMusicXml(xml);
         openScore(data, file.name);
-        const entry = { name: data.title, xml, savedAt: Date.now() };
-        const next = [entry, ...loadSaved().filter((item) => item.name !== data.title)].slice(0, 5);
-        localStorage.setItem("notera-scores", JSON.stringify(next));
-        setSaved(next);
+        persistScore(data, file.name, xml);
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Не удалось открыть файл.");
       } finally {
         setLoading(false);
       }
     },
-    [openScore, processPdf],
+    [openScore, persistScore, processPdf],
   );
 
   const cancelOmr = async () => {
@@ -1220,7 +1246,11 @@ export default function Home() {
             <div className="recent-grid">
               {saved.map((item) => (
                 <article className="recent-card" key={item.savedAt}>
-                  <button className="recent-open" onClick={() => openScore(parseMusicXml(item.xml), `${item.name}.musicxml`)}>
+                  <button className="recent-open" onClick={() => {
+                    const data = parseMusicXml(item.xml);
+                    if (item.bpm) data.bpm = item.bpm;
+                    openScore(data, item.fileName);
+                  }}>
                     <span className="sheet-thumb">𝄞</span>
                     <span><b>{item.name}</b><small>{new Date(item.savedAt).toLocaleDateString("ru-RU")}</small></span>
                   </button>

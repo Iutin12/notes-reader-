@@ -41,6 +41,7 @@ class JobPublic(BaseModel):
     stage: str
     message: str
     page_count: int | None = None
+    detected_bpm: int | None = None
     created_at: float
     updated_at: float
     result_url: str | None = None
@@ -94,6 +95,7 @@ def public_job(job: dict[str, Any]) -> JobPublic:
                 "stage",
                 "message",
                 "page_count",
+                "detected_bpm",
                 "created_at",
                 "updated_at",
             )
@@ -105,6 +107,38 @@ def public_job(job: dict[str, Any]) -> JobPublic:
         ),
         thumbnails=thumbnails,
     )
+
+
+def extract_pdf_bpm(source: Path) -> int | None:
+    """Read a printed metronome mark from the first page's PDF text layer.
+
+    Audiveris often omits tempo directions in its MusicXML output, while many
+    digital scores retain a selectable text mark such as "quarter = 96".
+    """
+    try:
+        completed = subprocess.run(
+            ["pdftotext", "-f", "1", "-l", "1", "-layout", str(source), "-"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+    text = completed.stdout or ""
+    patterns = (
+        r"(?:[♩♪𝅘𝅥𝅮]|quarter|tempo|bpm)?\s*=\s*(\d{2,3})\b",
+        r"\b(?:tempo|bpm)\s*[:=]?\s*(\d{2,3})\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        bpm = int(match.group(1))
+        if 20 <= bpm <= 400:
+            return bpm
+    return None
 
 
 def run_checked(
@@ -374,6 +408,7 @@ async def create_job(
                 detail="Файл имеет расширение PDF, но его содержимое не является PDF.",
             )
         now = time.time()
+        detected_bpm = extract_pdf_bpm(source)
         job = write_job(
             job_id,
             id=job_id,
@@ -382,6 +417,7 @@ async def create_job(
             stage="queued",
             message="Файл загружен и поставлен в очередь.",
             page_count=None,
+            detected_bpm=detected_bpm,
             created_at=now,
         )
         background_tasks.add_task(process_pdf, job_id)
