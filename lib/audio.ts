@@ -14,9 +14,30 @@ export class PianoSynth {
   private master: GainNode | null = null;
   private compressor: DynamicsCompressorNode | null = null;
   private active = new Set<AudioScheduledSourceNode>();
+  private nativeActive = new Set<HTMLAudioElement>();
+  private nativeTimers = new Set<number>();
+  private nativeSamples = new Map<number, HTMLAudioElement>();
   private samples = new Map<number, AudioBuffer>();
   private loadingSamples: Promise<void> | null = null;
   private volume = 0.7;
+
+  private useNativeAudio() {
+    return (
+      typeof navigator !== "undefined" &&
+      /safari/i.test(navigator.userAgent) &&
+      !/chrome|chromium|android/i.test(navigator.userAgent)
+    );
+  }
+
+  private prepareNativeSamples() {
+    if (typeof Audio === "undefined" || this.nativeSamples.size > 0) return;
+    PIANO_SAMPLES.forEach(([name, midi]) => {
+      const audio = new Audio(`/audio/piano/${name}.mp3`);
+      audio.preload = "auto";
+      audio.load();
+      this.nativeSamples.set(midi, audio);
+    });
+  }
 
   private ensureContext() {
     if (!this.context) {
@@ -36,11 +57,26 @@ export class PianoSynth {
   }
 
   preload() {
+    if (this.useNativeAudio()) {
+      this.prepareNativeSamples();
+      return Promise.resolve();
+    }
     this.ensureContext();
     return this.loadSamples();
   }
 
   async resume() {
+    if (this.useNativeAudio()) {
+      this.prepareNativeSamples();
+      const sample = this.nativeSamples.get(60);
+      if (!sample) throw new Error("Не удалось подготовить звук для Safari.");
+      sample.volume = 0.0001;
+      sample.currentTime = 0;
+      await sample.play();
+      sample.pause();
+      sample.currentTime = 0;
+      return this.ensureContext();
+    }
     const context = this.ensureContext();
     // Safari and some Chromium configurations only allow resume() while the
     // original click is still active. Do this before any network/decode await.
@@ -98,6 +134,10 @@ export class PianoSynth {
   }
 
   note(midi: number, duration: number, when = 0, transpose = 0) {
+    if (this.useNativeAudio()) {
+      this.nativeNote(midi, duration, when, transpose);
+      return;
+    }
     if (!this.context || !this.master) return;
     const targetMidi = midi + transpose;
     const sampleMidi = PIANO_SAMPLES.reduce((nearest, candidate) =>
@@ -127,6 +167,43 @@ export class PianoSynth {
     source.addEventListener("ended", () => this.active.delete(source));
   }
 
+  private nativeNote(
+    midi: number,
+    duration: number,
+    when: number,
+    transpose: number,
+  ) {
+    const targetMidi = midi + transpose;
+    const sampleMidi = PIANO_SAMPLES.reduce((nearest, candidate) =>
+      Math.abs(candidate[1] - targetMidi) < Math.abs(nearest[1] - targetMidi)
+        ? candidate
+        : nearest,
+    )[1];
+    const template = this.nativeSamples.get(sampleMidi);
+    if (!template) return;
+    const timer = window.setTimeout(() => {
+      this.nativeTimers.delete(timer);
+      const audio = template.cloneNode(true) as HTMLAudioElement;
+      audio.preservesPitch = false;
+      audio.playbackRate = 2 ** ((targetMidi - sampleMidi) / 12);
+      audio.volume = Math.min(1, this.volume * 0.82);
+      this.nativeActive.add(audio);
+      const cleanup = () => this.nativeActive.delete(audio);
+      audio.addEventListener("ended", cleanup, { once: true });
+      void audio.play().catch(cleanup);
+      const stopTimer = window.setTimeout(
+        () => {
+          this.nativeTimers.delete(stopTimer);
+          audio.pause();
+          cleanup();
+        },
+        Math.max(100, (duration + 0.7) * 1000),
+      );
+      this.nativeTimers.add(stopTimer);
+    }, Math.max(0, when * 1000));
+    this.nativeTimers.add(timer);
+  }
+
   click(accent = false, when = 0, volume = 0.5) {
     if (!this.context || !this.master) return;
     const start = this.context.currentTime + Math.max(0, when);
@@ -145,6 +222,13 @@ export class PianoSynth {
   }
 
   stopAll() {
+    this.nativeTimers.forEach((timer) => window.clearTimeout(timer));
+    this.nativeTimers.clear();
+    this.nativeActive.forEach((audio) => {
+      audio.pause();
+      audio.currentTime = 0;
+    });
+    this.nativeActive.clear();
     if (!this.context) return;
     this.active.forEach((source) => {
       try {
