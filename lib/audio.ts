@@ -138,9 +138,15 @@ export class PianoSynth {
     }
   }
 
-  note(midi: number, duration: number, when = 0, transpose = 0) {
+  note(
+    midi: number,
+    duration: number,
+    when = 0,
+    transpose = 0,
+    polyphony = 1,
+  ) {
     if (this.useNativeAudio()) {
-      this.nativeNote(midi, duration, when, transpose);
+      this.nativeNote(midi, duration, when, transpose, polyphony);
       return;
     }
     if (!this.context || !this.master) return;
@@ -177,6 +183,7 @@ export class PianoSynth {
     duration: number,
     when: number,
     transpose: number,
+    polyphony: number,
   ) {
     const targetMidi = midi + transpose;
     const sampleMidi = PIANO_SAMPLES.reduce((nearest, candidate) =>
@@ -190,8 +197,16 @@ export class PianoSynth {
       this.nativeTimers.delete(timer);
       const audio = template.cloneNode(true) as HTMLAudioElement;
       audio.preservesPitch = false;
+      (
+        audio as HTMLAudioElement & { webkitPreservesPitch?: boolean }
+      ).webkitPreservesPitch = false;
       audio.playbackRate = 2 ** ((targetMidi - sampleMidi) / 12);
-      audio.volume = Math.min(1, this.volume * 0.82);
+      // Native media elements bypass the Web Audio compressor. Normalize each
+      // voice by chord size so several notes do not sum into digital clipping.
+      audio.volume = Math.min(
+        0.5,
+        (this.volume * 0.55) / Math.sqrt(Math.max(1, polyphony)),
+      );
       this.nativeActive.add(audio);
       const cleanup = () => this.nativeActive.delete(audio);
       audio.addEventListener("ended", cleanup, { once: true });
@@ -204,7 +219,7 @@ export class PianoSynth {
         },
         // A piano string continues to resonate after the key is released.
         // Keeping that tail makes phrases and chords blend like a composition.
-        Math.max(1600, (duration + 1.35) * 1000),
+        Math.max(1400, (duration + 1.05) * 1000),
       );
       this.nativeTimers.add(stopTimer);
     }, Math.max(0, when * 1000));

@@ -695,6 +695,7 @@ export default function Home() {
               durationSeconds(event, score.bpm, speed),
               delay,
               transpose,
+              event.midi.length,
             ),
           );
           nextAudioEvent += 1;
