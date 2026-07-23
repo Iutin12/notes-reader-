@@ -205,7 +205,21 @@ export class PianoSynth {
     leadingSilence: number,
   ) {
     const sampleRate = 44100;
-    const tail = 2.2;
+    // Safari plays a long score as consecutive rendered chunks. Keep enough
+    // overlap after this chunk for a whole/half note that starts at its end;
+    // otherwise the sound is cut at the fixed 2.2-second tail.
+    const tail = Math.min(
+      15,
+      Math.max(
+        2.2,
+        ...notes
+          .filter((note) => {
+            const start = leadingSilence + note.offset;
+            return start >= chunkStart && start < chunkStart + chunkSpan;
+          })
+          .map((note) => note.duration + 1.45),
+      ),
+    );
     const length = Math.max(
       1,
       Math.ceil((chunkSpan + tail) * sampleRate),
