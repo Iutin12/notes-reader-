@@ -47,6 +47,7 @@ type OsmdIterator = {
   currentTimeStamp?: FractionLike;
   CurrentSourceTimestamp?: FractionLike;
   CurrentMeasureIndex?: number;
+  CurrentRelativeInMeasureTimestamp?: FractionLike;
 };
 type OsmdCursor = {
   reset(): void;
@@ -285,7 +286,10 @@ export default function Home() {
     [clearTimers],
   );
 
-  const collectScoreClickPositions = useCallback((cursor: OsmdCursor) => {
+  const collectScoreClickPositions = useCallback((
+    cursor: OsmdCursor,
+    data: ScoreData,
+  ) => {
     const container = scoreRef.current;
     if (!container) return;
     const positions: ScoreClickPosition[] = [];
@@ -298,8 +302,20 @@ export default function Home() {
       const element = cursor.cursorElement;
       const rect = element?.getBoundingClientRect();
       if (rect && rect.height > 0) {
+        const iterator = cursor.Iterator || cursor.iterator;
+        const measure = (iterator?.CurrentMeasureIndex || 0) + 1;
+        const measureStart = Math.min(
+          ...data.events
+            .filter((event) => event.measure === measure)
+            .map((event) => event.startBeat),
+        );
+        const relativeBeat =
+          fractionValue(iterator?.CurrentRelativeInMeasureTimestamp) * 4;
         positions.push({
-          beat: cursorBeat(cursor),
+          beat:
+            Number.isFinite(measureStart)
+              ? measureStart + relativeBeat
+              : cursorBeat(cursor),
           x: rect.right - containerRect.left + container.scrollLeft,
           y:
             rect.top -
@@ -356,7 +372,7 @@ export default function Home() {
         await osmd.load(data.sourceXml);
         osmd.render();
         osmdRef.current = osmd;
-        collectScoreClickPositions(osmd.cursor);
+        collectScoreClickPositions(osmd.cursor, data);
       } catch (caught) {
         console.error("OSMD render failed", caught);
       }
@@ -565,17 +581,44 @@ export default function Home() {
     }
   }, [openScore]);
 
-  const advanceCursor = useCallback((targetBeat: number) => {
+  const advanceCursor = useCallback((targetBeat: number, targetMeasure?: number) => {
     const cursor = osmdRef.current?.cursor;
     if (!cursor) return;
     try {
-      if (targetBeat + 0.0001 < cursorBeatRef.current) {
+      const targetMeasureIndex =
+        targetMeasure === undefined ? undefined : targetMeasure - 1;
+      const measureStart =
+        targetMeasure === undefined || !score
+          ? 0
+          : Math.min(
+              ...score.events
+                .filter((event) => event.measure === targetMeasure)
+                .map((event) => event.startBeat),
+            );
+      const targetRelativeBeat = targetBeat - measureStart;
+      const initialIterator = cursor.Iterator || cursor.iterator;
+      const initialMeasureIndex = initialIterator?.CurrentMeasureIndex || 0;
+      if (
+        targetBeat + 0.0001 < cursorBeatRef.current ||
+        (targetMeasureIndex !== undefined &&
+          targetMeasureIndex < initialMeasureIndex)
+      ) {
         cursor.reset();
         cursorBeatRef.current = 0;
       }
       let guard = 0;
-      while (cursorBeat(cursor) + 0.0001 < targetBeat && guard < 10000) {
+      while (guard < 10000) {
         const iterator = cursor.Iterator || cursor.iterator;
+        const currentMeasureIndex = iterator?.CurrentMeasureIndex || 0;
+        const currentRelativeBeat =
+          fractionValue(iterator?.CurrentRelativeInMeasureTimestamp) * 4;
+        const beforeTarget =
+          targetMeasureIndex === undefined
+            ? cursorBeat(cursor) + 0.0001 < targetBeat
+            : currentMeasureIndex < targetMeasureIndex ||
+              (currentMeasureIndex === targetMeasureIndex &&
+                currentRelativeBeat + 0.0001 < targetRelativeBeat);
+        if (!beforeTarget) break;
         if (iterator?.EndReached) break;
         const before = cursorBeat(cursor);
         cursor.next();
@@ -625,7 +668,7 @@ export default function Home() {
         highlight.style.height = `${position.height}px`;
       }
     } catch {}
-  }, []);
+  }, [score]);
 
   const scheduleFrom = useCallback(
     async (startIndex: number, oneOnly = false) => {
@@ -770,7 +813,7 @@ export default function Home() {
           if (index >= 0) {
             setCurrentEvent(index);
             setPosition((event.startBeat * 60) / (score.bpm * speed));
-            advanceCursor(event.startBeat);
+            advanceCursor(event.startBeat, event.measure);
             if (autoScroll) {
               scoreRef.current
                 ?.querySelector(".osmd-cursor")
@@ -851,7 +894,7 @@ export default function Home() {
           ? (visibleEvents[next].startBeat * 60) / (score.bpm * speed)
           : 0,
       );
-      advanceCursor(visibleEvents[next].startBeat);
+      advanceCursor(visibleEvents[next].startBeat, visibleEvents[next].measure);
       if (mode === "event") void scheduleFrom(next, true);
     },
     [
@@ -901,7 +944,10 @@ export default function Home() {
     if (index < 0) index = visibleEvents.length - 1;
     setCurrentEvent(index);
     setPosition(seconds);
-    advanceCursor(visibleEvents[index].startBeat);
+    advanceCursor(
+      visibleEvents[index].startBeat,
+      visibleEvents[index].measure,
+    );
   };
 
   const playFromScoreClick = useCallback(
@@ -936,7 +982,10 @@ export default function Home() {
       setPosition(
         (visibleEvents[index].startBeat * 60) / (score.bpm * speed),
       );
-      advanceCursor(visibleEvents[index].startBeat);
+      advanceCursor(
+        visibleEvents[index].startBeat,
+        visibleEvents[index].measure,
+      );
       void scheduleFrom(index);
     },
     [advanceCursor, scheduleFrom, score, speed, stop, visibleEvents],
