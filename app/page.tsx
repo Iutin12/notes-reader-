@@ -221,6 +221,7 @@ export default function Home() {
   const [position, setPosition] = useState(0);
   const [currentEvent, setCurrentEvent] = useState(0);
   const [speed, setSpeed] = useState(1);
+  const [tempoInput, setTempoInput] = useState("120");
   const [volume, setVolume] = useState(0.7);
   const [transpose, setTranspose] = useState(0);
   const [mode, setMode] = useState<Mode>("continuous");
@@ -260,6 +261,10 @@ export default function Home() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (score) setTempoInput(String(Math.round(score.bpm * speed)));
+  }, [score, speed]);
 
   const visibleEvents = useMemo(() => {
     if (!score) return [];
@@ -1418,15 +1423,24 @@ export default function Home() {
             <input
               aria-label="Темп в ударах в минуту"
               type="number"
-              min={30}
-              max={300}
+              min={20}
+              max={400}
               step={1}
-              value={Math.round(score.bpm * speed)}
-              onChange={(event) => {
-                const bpm = Number(event.target.value);
-                if (!Number.isFinite(bpm) || bpm <= 0) return;
+              value={tempoInput}
+              onChange={(event) => setTempoInput(event.target.value)}
+              onBlur={() => {
+                const bpm = Number(tempoInput);
+                if (!Number.isFinite(bpm) || bpm <= 0) {
+                  setTempoInput(String(Math.round(score.bpm * speed)));
+                  return;
+                }
+                const clamped = Math.max(20, Math.min(400, Math.round(bpm)));
                 stop(false);
-                setSpeed(Math.max(30, Math.min(300, bpm)) / score.bpm);
+                setTempoInput(String(clamped));
+                setSpeed(clamped / score.bpm);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
               }}
             />
           </label>
