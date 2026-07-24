@@ -127,6 +127,59 @@ function displayNameFromFile(fileName: string) {
   return fileName.replace(/\.[^.]+$/, "") || fileName;
 }
 
+function renderReadableFallback(container: HTMLElement, data: ScoreData) {
+  const ns = "http://www.w3.org/2000/svg";
+  const measuresPerRow = 4;
+  const measureWidth = 220;
+  const rowHeight = 180;
+  const rows = Math.ceil(data.measureCount / measuresPerRow);
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${measureWidth * measuresPerRow + 40} ${rows * rowHeight + 40}`);
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Упрощённое отображение распознанных нот");
+  const line = (x1: number, y1: number, x2: number, y2: number, width = 1) => {
+    const element = document.createElementNS(ns, "line");
+    element.setAttribute("x1", String(x1)); element.setAttribute("y1", String(y1));
+    element.setAttribute("x2", String(x2)); element.setAttribute("y2", String(y2));
+    element.setAttribute("stroke", "#18251f"); element.setAttribute("stroke-width", String(width));
+    svg.appendChild(element);
+  };
+  const text = (value: string, x: number, y: number) => {
+    const element = document.createElementNS(ns, "text");
+    element.textContent = value; element.setAttribute("x", String(x)); element.setAttribute("y", String(y));
+    element.setAttribute("font-size", "13"); element.setAttribute("fill", "#18251f"); svg.appendChild(element);
+  };
+  for (let row = 0; row < rows; row += 1) {
+    const top = 26 + row * rowHeight;
+    for (const staffTop of [top, top + 82]) {
+      for (let index = 0; index < 5; index += 1) line(20, staffTop + index * 10, measureWidth * measuresPerRow + 20, staffTop + index * 10);
+    }
+    for (let column = 0; column <= measuresPerRow; column += 1) line(20 + column * measureWidth, top, 20 + column * measureWidth, top + 122, column === 0 || column === measuresPerRow ? 2 : 1);
+    for (let offset = 0; offset < measuresPerRow; offset += 1) {
+      const measure = row * measuresPerRow + offset + 1;
+      if (measure <= data.measureCount) text(String(measure), 26 + offset * measureWidth, top - 7);
+    }
+  }
+  data.events.filter((event) => !event.isRest).forEach((event) => {
+    const row = Math.floor((event.measure - 1) / measuresPerRow);
+    const column = (event.measure - 1) % measuresPerRow;
+    const top = 26 + row * rowHeight;
+    const measureEvents = data.events.filter((item) => item.measure === event.measure && !item.isRest);
+    const index = Math.max(0, measureEvents.findIndex((item) => item.id === event.id));
+    const x = 42 + column * measureWidth + (index + 1) * ((measureWidth - 36) / (measureEvents.length + 1));
+    event.midi.forEach((midi) => {
+      const staffTop = event.staff === 2 ? top + 82 : top;
+      const reference = event.staff === 2 ? 48 : 72;
+      const y = Math.max(staffTop - 16, Math.min(staffTop + 56, staffTop + 40 - (midi - reference) * 2.8));
+      const note = document.createElementNS(ns, "ellipse");
+      note.setAttribute("cx", String(x)); note.setAttribute("cy", String(y)); note.setAttribute("rx", "6"); note.setAttribute("ry", "4.5"); note.setAttribute("fill", "#111"); svg.appendChild(note);
+      line(x + 6, y, x + 6, y - 34, 1.4);
+    });
+  });
+  container.appendChild(svg);
+}
+
 function fractionValue(fraction?: FractionLike) {
   if (!fraction) return 0;
   if (Number.isFinite(fraction.RealValue)) return fraction.RealValue || 0;
@@ -298,7 +351,12 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (score) setTempoInput(String(Math.round(score.bpm * speed)));
+    if (!score) return;
+    const timer = window.setTimeout(
+      () => setTempoInput(String(Math.round(score.bpm * speed))),
+      0,
+    );
+    return () => window.clearTimeout(timer);
   }, [score, speed]);
 
   const visibleEvents = useMemo(() => {
@@ -463,12 +521,14 @@ export default function Home() {
         throw lastFailure;
       } catch (caught) {
         console.error("OSMD render failed", caught);
+        if (scoreRef.current) {
+          scoreRef.current.innerHTML = "";
+          renderReadableFallback(scoreRef.current, data);
+        }
         window.setTimeout(
           () =>
-            setError(
-              caught instanceof Error
-                ? `Не удалось отобразить партитуру: ${caught.message}`
-                : "Не удалось отобразить партитуру в SVG.",
+            setNotice(
+              "Партитура показана в упрощённом режиме: часть разметки MusicXML несовместима с браузерным отображением, но распознанные ноты сохранены.",
             ),
           0,
         );
