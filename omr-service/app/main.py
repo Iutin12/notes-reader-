@@ -142,6 +142,25 @@ def extract_pdf_bpm(source: Path) -> int | None:
     return None
 
 
+def extract_image_bpm(page: Path) -> int | None:
+    """Fallback for scanned PDFs whose tempo mark is not selectable text."""
+    try:
+        completed = subprocess.run(
+            ["tesseract", str(page), "stdout", "-l", "eng", "--psm", "6"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for pattern in (r"[=:=]\s*(\d{2,3})\b", r"\b(?:tempo|bpm)\s*(\d{2,3})\b"):
+        match = re.search(pattern, completed.stdout or "", flags=re.IGNORECASE)
+        if match and 20 <= int(match.group(1)) <= 400:
+            return int(match.group(1))
+    return None
+
+
 def run_checked(
     command: list[str],
     *,
@@ -308,8 +327,16 @@ def process_pdf(job_id: str) -> None:
                 timeout=30,
             )
 
+        # A scan has no PDF text layer, so retry the tempo mark with OCR after
+        # rendering the first page. The value is sent back in the job status.
+        if not read_job(job_id).get("detected_bpm"):
+            detected_bpm = extract_image_bpm(cleaned_pages / "page-001.png")
+            if detected_bpm:
+                write_job(job_id, detected_bpm=detected_bpm)
+
         write_job(job_id, stage="recognizing", message="Audiveris распознаёт страницы по очереди…")
         page_xml: list[Path] = []
+        failed_pages: list[int] = []
         logs: list[str] = []
         for index, page in enumerate(sorted(cleaned_pages.glob("page-*.png")), start=1):
             if read_job(job_id)["status"] == "cancelled":
@@ -328,11 +355,14 @@ def process_pdf(job_id: str) -> None:
                 extracted = page_output / "page.musicxml"
                 extract_musicxml(mxl_files[0], extracted)
                 page_xml.append(extracted)
-            except Exception as page_error:  # Keep the remaining pages usable.
+            except Exception as page_error:
                 logs.append(f"Page {index}: {page_error}")
+                failed_pages.append(index)
         log_path.write_text("\n\n".join(logs)[-500_000:], encoding="utf-8")
-        if not page_xml:
-            raise RuntimeError("Не удалось распознать ни одной страницы PDF. Попробуйте более чёткий скан или экспорт PDF из нотного редактора.")
+        if failed_pages:
+            raise RuntimeError(
+                "FAILED_PAGES:" + ", ".join(map(str, failed_pages))
+            )
 
         write_job(
             job_id,
@@ -345,7 +375,7 @@ def process_pdf(job_id: str) -> None:
             status="ready",
             stage="ready",
             message=(
-                f"Партитура готова ({len(page_xml)} из {page_count} страниц). Автоматическое распознавание может содержать "
+                f"Партитура готова: все {page_count} страниц распознаны. Автоматическое распознавание может содержать "
                 "ошибки — проверьте ноты перед обучением."
             ),
         )
@@ -356,7 +386,14 @@ def process_pdf(job_id: str) -> None:
                 job_id,
                 status="error",
                 stage="error",
-                message="Не удалось распознать PDF. Попробуйте более чёткий скан или PDF, экспортированный из нотного редактора. Подробности сохранены в audiveris.log.",
+                message=(
+                    "Не удалось распознать страницы: "
+                    + str(exc).removeprefix("FAILED_PAGES:")
+                    + ". Партитура не создана, потому что все страницы обязательны. "
+                    "Попробуйте более чёткий скан или PDF, экспортированный из нотного редактора."
+                    if str(exc).startswith("FAILED_PAGES:")
+                    else "Не удалось распознать PDF. Попробуйте более чёткий скан или PDF, экспортированный из нотного редактора. Подробности сохранены в audiveris.log."
+                ),
             )
     finally:
         shutil.rmtree(prepared_pages, ignore_errors=True)
