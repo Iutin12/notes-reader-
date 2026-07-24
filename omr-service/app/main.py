@@ -227,6 +227,20 @@ def merge_page_musicxml(page_xml: list[Path], result_path: Path) -> None:
     root = ET.parse(page_xml[0]).getroot()
     target_parts = {part.get("id"): part for part in root.findall("part")}
     next_number = {part_id: len(part.findall("measure")) + 1 for part_id, part in target_parts.items()}
+
+    def last_clefs(part: ET.Element) -> dict[str, tuple[str, str]]:
+        clefs: dict[str, tuple[str, str]] = {}
+        for clef in part.findall(".//attributes/clef"):
+            number = clef.get("number", "1")
+            sign = (clef.findtext("sign") or "").strip()
+            line = (clef.findtext("line") or "").strip()
+            if sign:
+                clefs[number] = (sign, line)
+        return clefs
+
+    inherited_clefs = {
+        part_id: last_clefs(part) for part_id, part in target_parts.items()
+    }
     for xml_path in page_xml[1:]:
         page_root = ET.parse(xml_path).getroot()
         for source_part in page_root.findall("part"):
@@ -238,10 +252,29 @@ def merge_page_musicxml(page_xml: list[Path], result_path: Path) -> None:
                 target_parts[part_id] = source_part
                 next_number[part_id] = len(source_part.findall("measure")) + 1
                 continue
+            # A page usually starts in the middle of an existing piano system.
+            # Audiveris then invents a default G clef for staff 2, even when
+            # the previous page established F clef. Keep the previous clef in
+            # that specific default-vs-inherited case.
+            first_measure = source_part.find("measure")
+            if first_measure is not None:
+                for clef in first_measure.findall("attributes/clef"):
+                    number = clef.get("number", "1")
+                    previous = inherited_clefs.get(part_id, {}).get(number)
+                    sign = (clef.findtext("sign") or "").strip()
+                    line = (clef.findtext("line") or "").strip()
+                    if previous and (sign, line) == ("G", "2") and previous != ("G", "2"):
+                        sign_node = clef.find("sign")
+                        if sign_node is not None:
+                            sign_node.text = previous[0]
+                        line_node = clef.find("line")
+                        if line_node is not None:
+                            line_node.text = previous[1]
             for measure in source_part.findall("measure"):
                 measure.set("number", str(next_number[part_id]))
                 next_number[part_id] += 1
                 target.append(measure)
+            inherited_clefs[part_id] = last_clefs(target)
     ET.indent(root, space="  ")
     ET.ElementTree(root).write(result_path, encoding="utf-8", xml_declaration=True)
 
