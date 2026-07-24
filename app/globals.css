@@ -466,7 +466,11 @@ kbd { border: 1px solid var(--line); background: var(--paper); padding: 2px 5px;
   cursor: crosshair;
 }
 .playback-highlight {
-  display: none !important;
+  /* Keep its geometry for auto-scroll while noteheads are highlighted via
+     OSMD itself. display:none makes getBoundingClientRect() always zero. */
+  position: absolute;
+  pointer-events: none;
+  visibility: hidden;
 }
 .playback-highlight[hidden] { display: none; }
 .paper svg { max-width: 100%; height: auto; }

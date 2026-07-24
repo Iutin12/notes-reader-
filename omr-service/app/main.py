@@ -142,6 +142,25 @@ def extract_pdf_bpm(source: Path) -> int | None:
     return None
 
 
+def extract_image_bpm(page: Path) -> int | None:
+    """Fallback for scanned PDFs whose tempo mark is not selectable text."""
+    try:
+        completed = subprocess.run(
+            ["tesseract", str(page), "stdout", "-l", "eng", "--psm", "6"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for pattern in (r"[=:=]\s*(\d{2,3})\b", r"\b(?:tempo|bpm)\s*(\d{2,3})\b"):
+        match = re.search(pattern, completed.stdout or "", flags=re.IGNORECASE)
+        if match and 20 <= int(match.group(1)) <= 400:
+            return int(match.group(1))
+    return None
+
+
 def run_checked(
     command: list[str],
     *,
@@ -208,6 +227,20 @@ def merge_page_musicxml(page_xml: list[Path], result_path: Path) -> None:
     root = ET.parse(page_xml[0]).getroot()
     target_parts = {part.get("id"): part for part in root.findall("part")}
     next_number = {part_id: len(part.findall("measure")) + 1 for part_id, part in target_parts.items()}
+
+    def last_clefs(part: ET.Element) -> dict[str, tuple[str, str]]:
+        clefs: dict[str, tuple[str, str]] = {}
+        for clef in part.findall(".//attributes/clef"):
+            number = clef.get("number", "1")
+            sign = (clef.findtext("sign") or "").strip()
+            line = (clef.findtext("line") or "").strip()
+            if sign:
+                clefs[number] = (sign, line)
+        return clefs
+
+    inherited_clefs = {
+        part_id: last_clefs(part) for part_id, part in target_parts.items()
+    }
     for xml_path in page_xml[1:]:
         page_root = ET.parse(xml_path).getroot()
         for source_part in page_root.findall("part"):
@@ -219,22 +252,58 @@ def merge_page_musicxml(page_xml: list[Path], result_path: Path) -> None:
                 target_parts[part_id] = source_part
                 next_number[part_id] = len(source_part.findall("measure")) + 1
                 continue
+            # A page usually starts in the middle of an existing piano system.
+            # Audiveris then invents a default G clef for staff 2, even when
+            # the previous page established F clef. Keep the previous clef in
+            # that specific default-vs-inherited case.
+            first_measure = source_part.find("measure")
+            if first_measure is not None:
+                for clef in first_measure.findall("attributes/clef"):
+                    number = clef.get("number", "1")
+                    previous = inherited_clefs.get(part_id, {}).get(number)
+                    sign = (clef.findtext("sign") or "").strip()
+                    line = (clef.findtext("line") or "").strip()
+                    if previous and (sign, line) == ("G", "2") and previous != ("G", "2"):
+                        sign_node = clef.find("sign")
+                        if sign_node is not None:
+                            sign_node.text = previous[0]
+                        line_node = clef.find("line")
+                        if line_node is not None:
+                            line_node.text = previous[1]
             for measure in source_part.findall("measure"):
                 measure.set("number", str(next_number[part_id]))
                 next_number[part_id] += 1
                 target.append(measure)
+            inherited_clefs[part_id] = last_clefs(target)
     ET.indent(root, space="  ")
     ET.ElementTree(root).write(result_path, encoding="utf-8", xml_declaration=True)
+
+
+def musicxml_quality(path: Path) -> tuple[int, int, int]:
+    """A conservative completeness signal for competing OMR exports."""
+    root = ET.parse(path).getroot()
+    measures = root.findall(".//part/measure")
+    sounding_notes = 0
+    nonempty_measures = 0
+    for measure in measures:
+        notes = measure.findall("note")
+        if notes:
+            nonempty_measures += 1
+        sounding_notes += sum(1 for note in notes if note.find("rest") is None)
+    # Prefer exports that retain more noteheads, then more populated measures.
+    return sounding_notes, nonempty_measures, len(measures)
 
 
 def process_pdf(job_id: str) -> None:
     directory = job_dir(job_id)
     source = directory / "source.pdf"
     prepared_pages = directory / "prepared-pages"
+    high_res_pages = directory / "high-resolution-pages"
     cleaned_pages = directory / "cleaned-pages"
     output_dir = directory / "audiveris-output"
     log_path = directory / "audiveris.log"
     prepared_pages.mkdir(exist_ok=True)
+    high_res_pages.mkdir(exist_ok=True)
     cleaned_pages.mkdir(exist_ok=True)
     output_dir.mkdir(exist_ok=True)
 
@@ -271,8 +340,21 @@ def process_pdf(job_id: str) -> None:
             timeout=min(300, OMR_TIMEOUT_SECONDS),
             log_file=directory / "preparation.log",
         )
+        run_checked(
+            [
+                "pdftoppm",
+                "-png",
+                "-r",
+                "360",
+                str(source),
+                str(high_res_pages / "page"),
+            ],
+            timeout=min(450, OMR_TIMEOUT_SECONDS),
+            log_file=directory / "preparation-high-resolution.log",
+        )
         pages = sorted(prepared_pages.glob("page-*.png"))
-        if not pages:
+        high_pages = sorted(high_res_pages.glob("page-*.png"))
+        if not pages or len(high_pages) != len(pages):
             raise RuntimeError("Не удалось преобразовать страницы PDF в изображения.")
 
         for index, page in enumerate(pages, start=1):
@@ -308,31 +390,60 @@ def process_pdf(job_id: str) -> None:
                 timeout=30,
             )
 
+        # A scan has no PDF text layer, so retry the tempo mark with OCR after
+        # rendering the first page. The value is sent back in the job status.
+        if not read_job(job_id).get("detected_bpm"):
+            detected_bpm = extract_image_bpm(cleaned_pages / "page-001.png")
+            if detected_bpm:
+                write_job(job_id, detected_bpm=detected_bpm)
+
         write_job(job_id, stage="recognizing", message="Audiveris распознаёт страницы по очереди…")
         page_xml: list[Path] = []
+        failed_pages: list[int] = []
         logs: list[str] = []
-        for index, page in enumerate(sorted(cleaned_pages.glob("page-*.png")), start=1):
+        # Do not feed the deskewed/trimmed image into OMR. It helps a noisy
+        # scan, but removes thin noteheads and ties from vector PDFs. Audiveris
+        # receives the untouched 300-DPI page; the cleaned copy is retained for
+        # thumbnails and OCR only.
+        for index, page in enumerate(pages, start=1):
             if read_job(job_id)["status"] == "cancelled":
                 return
             write_job(job_id, message=f"Audiveris распознаёт страницу {index} из {page_count}…")
             page_output = output_dir / f"page-{index:03d}"
             page_output.mkdir(exist_ok=True)
-            try:
-                logs.append(run_checked(
-                    [AUDIVERIS_BIN, "-batch", "-transcribe", "-export", "-save", "-swap", "-output", str(page_output), "--", str(page)],
-                    timeout=OMR_TIMEOUT_SECONDS,
-                ))
-                mxl_files = sorted(page_output.rglob("*.mxl"))
-                if not mxl_files:
-                    raise RuntimeError("не создан файл MusicXML")
+            candidates: list[tuple[tuple[int, int, int], Path, str]] = []
+            for label, variant in (("300dpi", page), ("360dpi", high_pages[index - 1])):
+                candidate_output = page_output / label
+                candidate_output.mkdir(exist_ok=True)
+                try:
+                    logs.append(run_checked(
+                        # Audiveris already writes an .omr work file when exporting.
+                        # Passing -save asks it to write that archive a second time;
+                        # on several dense pages this triggers FileSystemAlreadyExistsException.
+                        [AUDIVERIS_BIN, "-batch", "-transcribe", "-export", "-swap", "-output", str(candidate_output), "--", str(variant)],
+                        timeout=OMR_TIMEOUT_SECONDS,
+                    ))
+                    mxl_files = sorted(candidate_output.rglob("*.mxl"))
+                    if not mxl_files:
+                        raise RuntimeError("не создан файл MusicXML")
+                    extracted = candidate_output / "page.musicxml"
+                    extract_musicxml(mxl_files[0], extracted)
+                    candidates.append((musicxml_quality(extracted), extracted, label))
+                except Exception as candidate_error:
+                    logs.append(f"Page {index} ({label}): {candidate_error}")
+            if candidates:
+                quality, selected, label = max(candidates, key=lambda candidate: candidate[0])
                 extracted = page_output / "page.musicxml"
-                extract_musicxml(mxl_files[0], extracted)
+                shutil.copyfile(selected, extracted)
+                logs.append(f"Page {index}: selected {label}, quality={quality}")
                 page_xml.append(extracted)
-            except Exception as page_error:  # Keep the remaining pages usable.
-                logs.append(f"Page {index}: {page_error}")
+            else:
+                failed_pages.append(index)
         log_path.write_text("\n\n".join(logs)[-500_000:], encoding="utf-8")
-        if not page_xml:
-            raise RuntimeError("Не удалось распознать ни одной страницы PDF. Попробуйте более чёткий скан или экспорт PDF из нотного редактора.")
+        if failed_pages:
+            raise RuntimeError(
+                "FAILED_PAGES:" + ", ".join(map(str, failed_pages))
+            )
 
         write_job(
             job_id,
@@ -345,7 +456,7 @@ def process_pdf(job_id: str) -> None:
             status="ready",
             stage="ready",
             message=(
-                f"Партитура готова ({len(page_xml)} из {page_count} страниц). Автоматическое распознавание может содержать "
+                f"Партитура готова: все {page_count} страниц распознаны. Автоматическое распознавание может содержать "
                 "ошибки — проверьте ноты перед обучением."
             ),
         )
@@ -356,10 +467,18 @@ def process_pdf(job_id: str) -> None:
                 job_id,
                 status="error",
                 stage="error",
-                message="Не удалось распознать PDF. Попробуйте более чёткий скан или PDF, экспортированный из нотного редактора. Подробности сохранены в audiveris.log.",
+                message=(
+                    "Не удалось распознать страницы: "
+                    + str(exc).removeprefix("FAILED_PAGES:")
+                    + ". Партитура не создана, потому что все страницы обязательны. "
+                    "Попробуйте более чёткий скан или PDF, экспортированный из нотного редактора."
+                    if str(exc).startswith("FAILED_PAGES:")
+                    else "Не удалось распознать PDF. Попробуйте более чёткий скан или PDF, экспортированный из нотного редактора. Подробности сохранены в audiveris.log."
+                ),
             )
     finally:
         shutil.rmtree(prepared_pages, ignore_errors=True)
+        shutil.rmtree(high_res_pages, ignore_errors=True)
         shutil.rmtree(cleaned_pages, ignore_errors=True)
 
 

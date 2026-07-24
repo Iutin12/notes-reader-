@@ -87,16 +87,97 @@ const OMR_STAGES: Array<{ stage: OmrStage; label: string }> = [
 const wait = (milliseconds: number) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
+async function fetchWithRetry(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  attempts = 3,
+) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch(input, init);
+      if (
+        response.status < 500 ||
+        attempt === attempts - 1
+      ) {
+        return response;
+      }
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts - 1) throw error;
+    }
+    await wait(700 * (attempt + 1));
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Сервис распознавания временно недоступен.");
+}
+
 function simplifyMusicXmlForRendering(xml: string) {
   return xml
     .replace(/<beam\b[^>]*>[\s\S]*?<\/beam\s*>/gi, "")
     .replace(/<notations\b[^>]*>[\s\S]*?<\/notations\s*>/gi, "")
+    // Fallback only: malformed OMR directions can make OSMD render a blank
+    // page. The first rendering attempt keeps them intact.
     .replace(/<direction\b[^>]*>[\s\S]*?<\/direction\s*>/gi, "")
     .replace(/<print\b[^>]*>[\s\S]*?<\/print\s*>/gi, "");
 }
 
 function displayNameFromFile(fileName: string) {
   return fileName.replace(/\.[^.]+$/, "") || fileName;
+}
+
+function renderReadableFallback(container: HTMLElement, data: ScoreData) {
+  const ns = "http://www.w3.org/2000/svg";
+  const measuresPerRow = 4;
+  const measureWidth = 220;
+  const rowHeight = 180;
+  const rows = Math.ceil(data.measureCount / measuresPerRow);
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${measureWidth * measuresPerRow + 40} ${rows * rowHeight + 40}`);
+  svg.setAttribute("width", "100%");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Упрощённое отображение распознанных нот");
+  const line = (x1: number, y1: number, x2: number, y2: number, width = 1) => {
+    const element = document.createElementNS(ns, "line");
+    element.setAttribute("x1", String(x1)); element.setAttribute("y1", String(y1));
+    element.setAttribute("x2", String(x2)); element.setAttribute("y2", String(y2));
+    element.setAttribute("stroke", "#18251f"); element.setAttribute("stroke-width", String(width));
+    svg.appendChild(element);
+  };
+  const text = (value: string, x: number, y: number) => {
+    const element = document.createElementNS(ns, "text");
+    element.textContent = value; element.setAttribute("x", String(x)); element.setAttribute("y", String(y));
+    element.setAttribute("font-size", "13"); element.setAttribute("fill", "#18251f"); svg.appendChild(element);
+  };
+  for (let row = 0; row < rows; row += 1) {
+    const top = 26 + row * rowHeight;
+    for (const staffTop of [top, top + 82]) {
+      for (let index = 0; index < 5; index += 1) line(20, staffTop + index * 10, measureWidth * measuresPerRow + 20, staffTop + index * 10);
+    }
+    for (let column = 0; column <= measuresPerRow; column += 1) line(20 + column * measureWidth, top, 20 + column * measureWidth, top + 122, column === 0 || column === measuresPerRow ? 2 : 1);
+    for (let offset = 0; offset < measuresPerRow; offset += 1) {
+      const measure = row * measuresPerRow + offset + 1;
+      if (measure <= data.measureCount) text(String(measure), 26 + offset * measureWidth, top - 7);
+    }
+  }
+  data.events.filter((event) => !event.isRest).forEach((event) => {
+    const row = Math.floor((event.measure - 1) / measuresPerRow);
+    const column = (event.measure - 1) % measuresPerRow;
+    const top = 26 + row * rowHeight;
+    const measureEvents = data.events.filter((item) => item.measure === event.measure && !item.isRest);
+    const index = Math.max(0, measureEvents.findIndex((item) => item.id === event.id));
+    const x = 42 + column * measureWidth + (index + 1) * ((measureWidth - 36) / (measureEvents.length + 1));
+    event.midi.forEach((midi) => {
+      const staffTop = event.staff === 2 ? top + 82 : top;
+      const reference = event.staff === 2 ? 48 : 72;
+      const y = Math.max(staffTop - 16, Math.min(staffTop + 56, staffTop + 40 - (midi - reference) * 2.8));
+      const note = document.createElementNS(ns, "ellipse");
+      note.setAttribute("cx", String(x)); note.setAttribute("cy", String(y)); note.setAttribute("rx", "6"); note.setAttribute("ry", "4.5"); note.setAttribute("fill", "#111"); svg.appendChild(note);
+      line(x + 6, y, x + 6, y - 34, 1.4);
+    });
+  });
+  container.appendChild(svg);
 }
 
 function fractionValue(fraction?: FractionLike) {
@@ -234,7 +315,9 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showNames, setShowNames] = useState(false);
   const [solfege, setSolfege] = useState(true);
-  const [autoScroll, setAutoScroll] = useState(true);
+  // Manual reading should not fight the player. Users can enable following
+  // playback explicitly in settings when they want the score to scroll.
+  const [autoScroll, setAutoScroll] = useState(false);
   const [countIn, setCountIn] = useState(0);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [omrJob, setOmrJob] = useState<OmrJob | null>(null);
@@ -243,6 +326,7 @@ export default function Home() {
   const osmdRef = useRef<OsmdInstance | null>(null);
   const scoreClickPositionsRef = useRef<ScoreClickPosition[]>([]);
   const cursorBeatRef = useRef(0);
+  const autoScrollRef = useRef(false);
   const highlightedNotesRef = useRef<GraphicalNoteLike[]>([]);
   const synthRef = useRef(new PianoSynth());
   const timersRef = useRef<number[]>([]);
@@ -251,6 +335,10 @@ export default function Home() {
   const scheduleRef = useRef<
     (startIndex: number, oneOnly?: boolean) => Promise<void>
   >(() => Promise.resolve());
+
+  useEffect(() => {
+    autoScrollRef.current = autoScroll;
+  }, [autoScroll]);
 
   useEffect(() => {
     void synthRef.current.preload().catch(() => {});
@@ -263,7 +351,12 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (score) setTempoInput(String(Math.round(score.bpm * speed)));
+    if (!score) return;
+    const timer = window.setTimeout(
+      () => setTempoInput(String(Math.round(score.bpm * speed))),
+      0,
+    );
+    return () => window.clearTimeout(timer);
   }, [score, speed]);
 
   const visibleEvents = useMemo(() => {
@@ -393,13 +486,13 @@ export default function Home() {
               backend: "svg",
               drawTitle: false,
               drawingParameters: "compacttight",
-              followCursor: true,
+              followCursor: false,
               cursorsOptions: [
                 {
                   type: 4,
                   color: "#2f6b57",
                   alpha: 0.16,
-                  follow: true,
+                  follow: false,
                 },
               ],
             });
@@ -428,12 +521,14 @@ export default function Home() {
         throw lastFailure;
       } catch (caught) {
         console.error("OSMD render failed", caught);
+        if (scoreRef.current) {
+          scoreRef.current.innerHTML = "";
+          renderReadableFallback(scoreRef.current, data);
+        }
         window.setTimeout(
           () =>
-            setError(
-              caught instanceof Error
-                ? `Не удалось отобразить партитуру: ${caught.message}`
-                : "Не удалось отобразить партитуру в SVG.",
+            setNotice(
+              "Партитура показана в упрощённом режиме: часть разметки MusicXML несовместима с браузерным отображением, но распознанные ноты сохранены.",
             ),
           0,
         );
@@ -503,7 +598,7 @@ export default function Home() {
       try {
         const form = new FormData();
         form.append("file", file);
-        const upload = await fetch("/api/omr/jobs", {
+        const upload = await fetchWithRetry("/api/omr/jobs", {
           method: "POST",
           body: form,
         });
@@ -520,7 +615,7 @@ export default function Home() {
 
         while (!["ready", "error", "cancelled"].includes(job.status)) {
           await wait(1500);
-          const statusResponse = await fetch(`/api/omr/jobs/${job.id}`, {
+          const statusResponse = await fetchWithRetry(`/api/omr/jobs/${job.id}`, {
             cache: "no-store",
           });
           if (!statusResponse.ok) {
@@ -534,7 +629,7 @@ export default function Home() {
         if (!job.result_url) {
           throw new Error("Сервис завершил задачу без ссылки на MusicXML.");
         }
-        const result = await fetch(job.result_url, { cache: "no-store" });
+        const result = await fetchWithRetry(job.result_url, { cache: "no-store" });
         if (!result.ok) throw new Error("Не удалось получить готовый MusicXML.");
         const xml = await result.text();
         const data = parseMusicXml(xml);
@@ -556,7 +651,9 @@ export default function Home() {
           status: "error",
           stage: "error",
           message:
-            message.includes("<!DOCTYPE") || message.includes("Unexpected token")
+            message.includes("Failed to fetch")
+              ? "Сервис распознавания перезапускается или временно недоступен. Подождите несколько секунд и нажмите «Запустить снова»."
+              : message.includes("<!DOCTYPE") || message.includes("Unexpected token")
               ? "OMR-сервис недоступен. Запустите приложение через Docker Compose."
               : message,
           page_count: current?.page_count || null,
@@ -892,10 +989,24 @@ export default function Home() {
             setCurrentEvent(index);
             setPosition((event.startBeat * 60) / (score.bpm * speed));
             advanceCursor(event.startBeat, event.measure);
-            if (autoScroll) {
-              scoreRef.current
-                ?.querySelector(".osmd-cursor")
-                ?.scrollIntoView({ block: "center", behavior: "smooth" });
+            if (autoScrollRef.current) {
+              window.requestAnimationFrame(() => {
+                const scoreElement = scoreRef.current;
+                if (!scoreElement || !score) return;
+                // OMR cursor bounds are inconsistent between OSMD versions.
+                // The measure sequence is stable, so follow it proportionally
+                // through the rendered page instead of following a broken DOM
+                // cursor that can be placed at the very bottom.
+                const progress = Math.max(
+                  0,
+                  Math.min(1, (event.measure - 1) / Math.max(1, score.measureCount - 1)),
+                );
+                const scoreTop = window.scrollY + scoreElement.getBoundingClientRect().top;
+                const target = scoreTop + scoreElement.scrollHeight * progress - window.innerHeight * 0.36;
+                if (Math.abs(window.scrollY - target) > 28) {
+                  window.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+                }
+              });
             }
           }
         }, offset * 1000);
@@ -924,7 +1035,6 @@ export default function Home() {
     },
     [
       advanceCursor,
-      autoScroll,
       clearTimers,
       countIn,
       metronome,
@@ -999,6 +1109,7 @@ export default function Home() {
       else if (event.key === "ArrowLeft") moveEvent(-1);
       else if (event.key.toLowerCase() === "r") setRepeat((value) => !value);
       else if (event.key.toLowerCase() === "m") setMetronome((value) => !value);
+      else if (event.code === "KeyA") setAutoScroll((value) => !value);
       else if (event.key === "Escape") setSettingsOpen(false);
     };
     window.addEventListener("keydown", onKey);
@@ -1335,7 +1446,7 @@ export default function Home() {
             <span>Быстрые клавиши</span>
             <p><kbd>Пробел</kbd> играть / пауза</p>
             <p><kbd>←</kbd><kbd>→</kbd> шаг назад / вперёд</p>
-            <p><kbd>R</kbd> повтор · <kbd>M</kbd> метроном</p>
+            <p><kbd>R</kbd> повтор · <kbd>M</kbd> метроном · <kbd>A</kbd> автопрокрутка</p>
           </div>
         </aside>
 
@@ -1461,7 +1572,7 @@ export default function Home() {
               <label><span>Громкость метронома</span><input type="range" min={0} max={1} step={0.05} value={metronomeVolume} onChange={(e) => setMetronomeVolume(Number(e.target.value))} /></label>
             </div>
             <div className="settings-toggles">
-              <label><input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} /><span><b>Автоматическая прокрутка</b><small>Удерживать текущую позицию в поле зрения</small></span></label>
+              <label><input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} /><span><b>Автоматическая прокрутка <kbd>A</kbd></b><small>Удерживать текущую позицию в поле зрения</small></span></label>
               <label><input type="checkbox" checked={showNames} onChange={(e) => setShowNames(e.target.checked)} /><span><b>Показывать названия нот</b><small>Отображать звучащий аккорд под партитурой</small></span></label>
               <label><input type="checkbox" checked={solfege} onChange={(e) => setSolfege(e.target.checked)} /><span><b>Названия до–ре–ми</b><small>Выключите для обозначений C–D–E</small></span></label>
               <label><input type="checkbox" checked={theme === "dark"} onChange={(e) => { const value = e.target.checked ? "dark" : "light"; setTheme(value); localStorage.setItem("notera-theme", value); }} /><span><b>Тёмная тема</b><small>Снизить яркость интерфейса</small></span></label>
