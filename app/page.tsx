@@ -936,14 +936,21 @@ export default function Home() {
                 if (!marker || !viewport) return;
                 const markerBox = marker.getBoundingClientRect();
                 const viewportBox = viewport.getBoundingClientRect();
-                viewport.scrollTo({
-                  top:
-                    viewport.scrollTop +
-                    markerBox.top -
-                    viewportBox.top -
-                    viewport.clientHeight / 2,
-                  behavior: "smooth",
-                });
+                const topInsideViewport =
+                  viewport.scrollTop +
+                  markerBox.top -
+                  viewportBox.top -
+                  viewport.clientHeight / 2;
+                if (viewport.scrollHeight > viewport.clientHeight + 1) {
+                  viewport.scrollTo({ top: topInsideViewport, behavior: "smooth" });
+                } else {
+                  // Desktop layout grows with the score, so the browser
+                  // document (not .score-area) is the scrollable viewport.
+                  window.scrollTo({
+                    top: window.scrollY + markerBox.top - window.innerHeight / 2,
+                    behavior: "smooth",
+                  });
+                }
               });
             }
           }
@@ -1047,7 +1054,7 @@ export default function Home() {
       else if (event.key === "ArrowLeft") moveEvent(-1);
       else if (event.key.toLowerCase() === "r") setRepeat((value) => !value);
       else if (event.key.toLowerCase() === "m") setMetronome((value) => !value);
-      else if (event.key.toLowerCase() === "a") setAutoScroll((value) => !value);
+      else if (event.code === "KeyA") setAutoScroll((value) => !value);
       else if (event.key === "Escape") setSettingsOpen(false);
     };
     window.addEventListener("keydown", onKey);
