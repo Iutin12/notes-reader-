@@ -87,6 +87,32 @@ const OMR_STAGES: Array<{ stage: OmrStage; label: string }> = [
 const wait = (milliseconds: number) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
+async function fetchWithRetry(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  attempts = 3,
+) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch(input, init);
+      if (
+        response.status < 500 ||
+        attempt === attempts - 1
+      ) {
+        return response;
+      }
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts - 1) throw error;
+    }
+    await wait(700 * (attempt + 1));
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Сервис распознавания временно недоступен.");
+}
+
 function simplifyMusicXmlForRendering(xml: string) {
   return xml
     .replace(/<beam\b[^>]*>[\s\S]*?<\/beam\s*>/gi, "")
@@ -509,7 +535,7 @@ export default function Home() {
       try {
         const form = new FormData();
         form.append("file", file);
-        const upload = await fetch("/api/omr/jobs", {
+        const upload = await fetchWithRetry("/api/omr/jobs", {
           method: "POST",
           body: form,
         });
@@ -526,7 +552,7 @@ export default function Home() {
 
         while (!["ready", "error", "cancelled"].includes(job.status)) {
           await wait(1500);
-          const statusResponse = await fetch(`/api/omr/jobs/${job.id}`, {
+          const statusResponse = await fetchWithRetry(`/api/omr/jobs/${job.id}`, {
             cache: "no-store",
           });
           if (!statusResponse.ok) {
@@ -540,7 +566,7 @@ export default function Home() {
         if (!job.result_url) {
           throw new Error("Сервис завершил задачу без ссылки на MusicXML.");
         }
-        const result = await fetch(job.result_url, { cache: "no-store" });
+        const result = await fetchWithRetry(job.result_url, { cache: "no-store" });
         if (!result.ok) throw new Error("Не удалось получить готовый MusicXML.");
         const xml = await result.text();
         const data = parseMusicXml(xml);
@@ -562,7 +588,9 @@ export default function Home() {
           status: "error",
           stage: "error",
           message:
-            message.includes("<!DOCTYPE") || message.includes("Unexpected token")
+            message.includes("Failed to fetch")
+              ? "Сервис распознавания перезапускается или временно недоступен. Подождите несколько секунд и нажмите «Запустить снова»."
+              : message.includes("<!DOCTYPE") || message.includes("Unexpected token")
               ? "OMR-сервис недоступен. Запустите приложение через Docker Compose."
               : message,
           page_count: current?.page_count || null,
