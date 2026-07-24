@@ -244,6 +244,7 @@ export default function Home() {
   const osmdRef = useRef<OsmdInstance | null>(null);
   const scoreClickPositionsRef = useRef<ScoreClickPosition[]>([]);
   const cursorBeatRef = useRef(0);
+  const autoScrollRef = useRef(false);
   const highlightedNotesRef = useRef<GraphicalNoteLike[]>([]);
   const synthRef = useRef(new PianoSynth());
   const timersRef = useRef<number[]>([]);
@@ -252,6 +253,10 @@ export default function Home() {
   const scheduleRef = useRef<
     (startIndex: number, oneOnly?: boolean) => Promise<void>
   >(() => Promise.resolve());
+
+  useEffect(() => {
+    autoScrollRef.current = autoScroll;
+  }, [autoScroll]);
 
   useEffect(() => {
     void synthRef.current.preload().catch(() => {});
@@ -893,7 +898,7 @@ export default function Home() {
             setCurrentEvent(index);
             setPosition((event.startBeat * 60) / (score.bpm * speed));
             advanceCursor(event.startBeat, event.measure);
-            if (autoScroll) {
+            if (autoScrollRef.current) {
               scoreRef.current
                 ?.querySelector(".osmd-cursor")
                 ?.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -925,7 +930,6 @@ export default function Home() {
     },
     [
       advanceCursor,
-      autoScroll,
       clearTimers,
       countIn,
       metronome,
@@ -1000,6 +1004,7 @@ export default function Home() {
       else if (event.key === "ArrowLeft") moveEvent(-1);
       else if (event.key.toLowerCase() === "r") setRepeat((value) => !value);
       else if (event.key.toLowerCase() === "m") setMetronome((value) => !value);
+      else if (event.key.toLowerCase() === "a") setAutoScroll((value) => !value);
       else if (event.key === "Escape") setSettingsOpen(false);
     };
     window.addEventListener("keydown", onKey);
@@ -1336,7 +1341,7 @@ export default function Home() {
             <span>Быстрые клавиши</span>
             <p><kbd>Пробел</kbd> играть / пауза</p>
             <p><kbd>←</kbd><kbd>→</kbd> шаг назад / вперёд</p>
-            <p><kbd>R</kbd> повтор · <kbd>M</kbd> метроном</p>
+            <p><kbd>R</kbd> повтор · <kbd>M</kbd> метроном · <kbd>A</kbd> автопрокрутка</p>
           </div>
         </aside>
 
@@ -1462,7 +1467,7 @@ export default function Home() {
               <label><span>Громкость метронома</span><input type="range" min={0} max={1} step={0.05} value={metronomeVolume} onChange={(e) => setMetronomeVolume(Number(e.target.value))} /></label>
             </div>
             <div className="settings-toggles">
-              <label><input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} /><span><b>Автоматическая прокрутка</b><small>Удерживать текущую позицию в поле зрения</small></span></label>
+              <label><input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} /><span><b>Автоматическая прокрутка <kbd>A</kbd></b><small>Удерживать текущую позицию в поле зрения</small></span></label>
               <label><input type="checkbox" checked={showNames} onChange={(e) => setShowNames(e.target.checked)} /><span><b>Показывать названия нот</b><small>Отображать звучащий аккорд под партитурой</small></span></label>
               <label><input type="checkbox" checked={solfege} onChange={(e) => setSolfege(e.target.checked)} /><span><b>Названия до–ре–ми</b><small>Выключите для обозначений C–D–E</small></span></label>
               <label><input type="checkbox" checked={theme === "dark"} onChange={(e) => { const value = e.target.checked ? "dark" : "light"; setTheme(value); localStorage.setItem("notera-theme", value); }} /><span><b>Тёмная тема</b><small>Снизить яркость интерфейса</small></span></label>
