@@ -279,14 +279,31 @@ def merge_page_musicxml(page_xml: list[Path], result_path: Path) -> None:
     ET.ElementTree(root).write(result_path, encoding="utf-8", xml_declaration=True)
 
 
+def musicxml_quality(path: Path) -> tuple[int, int, int]:
+    """A conservative completeness signal for competing OMR exports."""
+    root = ET.parse(path).getroot()
+    measures = root.findall(".//part/measure")
+    sounding_notes = 0
+    nonempty_measures = 0
+    for measure in measures:
+        notes = measure.findall("note")
+        if notes:
+            nonempty_measures += 1
+        sounding_notes += sum(1 for note in notes if note.find("rest") is None)
+    # Prefer exports that retain more noteheads, then more populated measures.
+    return sounding_notes, nonempty_measures, len(measures)
+
+
 def process_pdf(job_id: str) -> None:
     directory = job_dir(job_id)
     source = directory / "source.pdf"
     prepared_pages = directory / "prepared-pages"
+    high_res_pages = directory / "high-resolution-pages"
     cleaned_pages = directory / "cleaned-pages"
     output_dir = directory / "audiveris-output"
     log_path = directory / "audiveris.log"
     prepared_pages.mkdir(exist_ok=True)
+    high_res_pages.mkdir(exist_ok=True)
     cleaned_pages.mkdir(exist_ok=True)
     output_dir.mkdir(exist_ok=True)
 
@@ -323,8 +340,21 @@ def process_pdf(job_id: str) -> None:
             timeout=min(300, OMR_TIMEOUT_SECONDS),
             log_file=directory / "preparation.log",
         )
+        run_checked(
+            [
+                "pdftoppm",
+                "-png",
+                "-r",
+                "360",
+                str(source),
+                str(high_res_pages / "page"),
+            ],
+            timeout=min(450, OMR_TIMEOUT_SECONDS),
+            log_file=directory / "preparation-high-resolution.log",
+        )
         pages = sorted(prepared_pages.glob("page-*.png"))
-        if not pages:
+        high_pages = sorted(high_res_pages.glob("page-*.png"))
+        if not pages or len(high_pages) != len(pages):
             raise RuntimeError("Не удалось преобразовать страницы PDF в изображения.")
 
         for index, page in enumerate(pages, start=1):
@@ -381,22 +411,33 @@ def process_pdf(job_id: str) -> None:
             write_job(job_id, message=f"Audiveris распознаёт страницу {index} из {page_count}…")
             page_output = output_dir / f"page-{index:03d}"
             page_output.mkdir(exist_ok=True)
-            try:
-                logs.append(run_checked(
-                    # Audiveris already writes an .omr work file when exporting.
-                    # Passing -save asks it to write that archive a second time;
-                    # on several dense pages this triggers FileSystemAlreadyExistsException.
-                    [AUDIVERIS_BIN, "-batch", "-transcribe", "-export", "-swap", "-output", str(page_output), "--", str(page)],
-                    timeout=OMR_TIMEOUT_SECONDS,
-                ))
-                mxl_files = sorted(page_output.rglob("*.mxl"))
-                if not mxl_files:
-                    raise RuntimeError("не создан файл MusicXML")
+            candidates: list[tuple[tuple[int, int, int], Path, str]] = []
+            for label, variant in (("300dpi", page), ("360dpi", high_pages[index - 1])):
+                candidate_output = page_output / label
+                candidate_output.mkdir(exist_ok=True)
+                try:
+                    logs.append(run_checked(
+                        # Audiveris already writes an .omr work file when exporting.
+                        # Passing -save asks it to write that archive a second time;
+                        # on several dense pages this triggers FileSystemAlreadyExistsException.
+                        [AUDIVERIS_BIN, "-batch", "-transcribe", "-export", "-swap", "-output", str(candidate_output), "--", str(variant)],
+                        timeout=OMR_TIMEOUT_SECONDS,
+                    ))
+                    mxl_files = sorted(candidate_output.rglob("*.mxl"))
+                    if not mxl_files:
+                        raise RuntimeError("не создан файл MusicXML")
+                    extracted = candidate_output / "page.musicxml"
+                    extract_musicxml(mxl_files[0], extracted)
+                    candidates.append((musicxml_quality(extracted), extracted, label))
+                except Exception as candidate_error:
+                    logs.append(f"Page {index} ({label}): {candidate_error}")
+            if candidates:
+                quality, selected, label = max(candidates, key=lambda candidate: candidate[0])
                 extracted = page_output / "page.musicxml"
-                extract_musicxml(mxl_files[0], extracted)
+                shutil.copyfile(selected, extracted)
+                logs.append(f"Page {index}: selected {label}, quality={quality}")
                 page_xml.append(extracted)
-            except Exception as page_error:
-                logs.append(f"Page {index}: {page_error}")
+            else:
                 failed_pages.append(index)
         log_path.write_text("\n\n".join(logs)[-500_000:], encoding="utf-8")
         if failed_pages:
@@ -437,6 +478,7 @@ def process_pdf(job_id: str) -> None:
             )
     finally:
         shutil.rmtree(prepared_pages, ignore_errors=True)
+        shutil.rmtree(high_res_pages, ignore_errors=True)
         shutil.rmtree(cleaned_pages, ignore_errors=True)
 
 
