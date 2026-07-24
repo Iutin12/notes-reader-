@@ -927,9 +927,24 @@ export default function Home() {
             setPosition((event.startBeat * 60) / (score.bpm * speed));
             advanceCursor(event.startBeat, event.measure);
             if (autoScrollRef.current) {
-              scoreRef.current
-                ?.querySelector(".osmd-cursor")
-                ?.scrollIntoView({ block: "center", behavior: "smooth" });
+              window.requestAnimationFrame(() => {
+                const scoreElement = scoreRef.current;
+                const marker = scoreElement?.querySelector<HTMLElement>(
+                  ".playback-highlight",
+                );
+                const viewport = scoreElement?.closest<HTMLElement>(".score-area");
+                if (!marker || !viewport) return;
+                const markerBox = marker.getBoundingClientRect();
+                const viewportBox = viewport.getBoundingClientRect();
+                viewport.scrollTo({
+                  top:
+                    viewport.scrollTop +
+                    markerBox.top -
+                    viewportBox.top -
+                    viewport.clientHeight / 2,
+                  behavior: "smooth",
+                });
+              });
             }
           }
         }, offset * 1000);
