@@ -394,13 +394,13 @@ export default function Home() {
               backend: "svg",
               drawTitle: false,
               drawingParameters: "compacttight",
-              followCursor: true,
+              followCursor: false,
               cursorsOptions: [
                 {
                   type: 4,
                   color: "#2f6b57",
                   alpha: 0.16,
-                  follow: true,
+                  follow: false,
                 },
               ],
             });
