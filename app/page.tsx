@@ -117,6 +117,9 @@ function simplifyMusicXmlForRendering(xml: string) {
   return xml
     .replace(/<beam\b[^>]*>[\s\S]*?<\/beam\s*>/gi, "")
     .replace(/<notations\b[^>]*>[\s\S]*?<\/notations\s*>/gi, "")
+    // Fallback only: malformed OMR directions can make OSMD render a blank
+    // page. The first rendering attempt keeps them intact.
+    .replace(/<direction\b[^>]*>[\s\S]*?<\/direction\s*>/gi, "")
     .replace(/<print\b[^>]*>[\s\S]*?<\/print\s*>/gi, "");
 }
 
