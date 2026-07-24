@@ -233,7 +233,9 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showNames, setShowNames] = useState(false);
   const [solfege, setSolfege] = useState(true);
-  const [autoScroll, setAutoScroll] = useState(true);
+  // Manual reading should not fight the player. Users can enable following
+  // playback explicitly in settings when they want the score to scroll.
+  const [autoScroll, setAutoScroll] = useState(false);
   const [countIn, setCountIn] = useState(0);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [omrJob, setOmrJob] = useState<OmrJob | null>(null);
