@@ -346,7 +346,10 @@ def process_pdf(job_id: str) -> None:
             page_output.mkdir(exist_ok=True)
             try:
                 logs.append(run_checked(
-                    [AUDIVERIS_BIN, "-batch", "-transcribe", "-export", "-save", "-swap", "-output", str(page_output), "--", str(page)],
+                    # Audiveris already writes an .omr work file when exporting.
+                    # Passing -save asks it to write that archive a second time;
+                    # on several dense pages this triggers FileSystemAlreadyExistsException.
+                    [AUDIVERIS_BIN, "-batch", "-transcribe", "-export", "-swap", "-output", str(page_output), "--", str(page)],
                     timeout=OMR_TIMEOUT_SECONDS,
                 ))
                 mxl_files = sorted(page_output.rglob("*.mxl"))
