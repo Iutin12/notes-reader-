@@ -12,6 +12,7 @@ import uuid
 import zipfile
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree as ET
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -200,6 +201,32 @@ def extract_musicxml(mxl_path: Path, result_path: Path) -> None:
     result_path.write_bytes(xml)
 
 
+def merge_page_musicxml(page_xml: list[Path], result_path: Path) -> None:
+    """Join one-page Audiveris exports into a single score-partwise file."""
+    if not page_xml:
+        raise RuntimeError("Audiveris не создал пригодный MusicXML ни для одной страницы.")
+    root = ET.parse(page_xml[0]).getroot()
+    target_parts = {part.get("id"): part for part in root.findall("part")}
+    next_number = {part_id: len(part.findall("measure")) + 1 for part_id, part in target_parts.items()}
+    for xml_path in page_xml[1:]:
+        page_root = ET.parse(xml_path).getroot()
+        for source_part in page_root.findall("part"):
+            part_id = source_part.get("id")
+            target = target_parts.get(part_id)
+            if target is None:
+                # Keep an unfamiliar part rather than losing musical material.
+                root.append(source_part)
+                target_parts[part_id] = source_part
+                next_number[part_id] = len(source_part.findall("measure")) + 1
+                continue
+            for measure in source_part.findall("measure"):
+                measure.set("number", str(next_number[part_id]))
+                next_number[part_id] += 1
+                target.append(measure)
+    ET.indent(root, space="  ")
+    ET.ElementTree(root).write(result_path, encoding="utf-8", xml_declaration=True)
+
+
 def process_pdf(job_id: str) -> None:
     directory = job_dir(job_id)
     source = directory / "source.pdf"
@@ -281,76 +308,44 @@ def process_pdf(job_id: str) -> None:
                 timeout=30,
             )
 
-        write_job(
-            job_id,
-            stage="recognizing",
-            message="Audiveris читает исходный PDF и распознаёт ноты…",
-        )
-        command = [
-            AUDIVERIS_BIN,
-            "-batch",
-            "-transcribe",
-            "-export",
-            "-save",
-            "-swap",
-            "-output",
-            str(output_dir),
-            "--",
-            str(source),
-        ]
-        process = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            start_new_session=True,
-            env={
-                **os.environ,
-                "HOME": "/tmp/notera-omr-home",
-                "JAVA_TOOL_OPTIONS": os.environ.get(
-                    "JAVA_TOOL_OPTIONS", "-Djava.awt.headless=true -Xmx4g"
-                ),
-            },
-        )
-        processes[job_id] = process
-        try:
-            output, _ = process.communicate(timeout=OMR_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.communicate()
-            raise RuntimeError(
-                f"Распознавание превысило лимит {OMR_TIMEOUT_SECONDS} секунд."
-            )
-        finally:
-            processes.pop(job_id, None)
-        log_path.write_text((output or "")[-500_000:], encoding="utf-8")
-
-        if read_job(job_id)["status"] == "cancelled":
-            return
-        if process.returncode != 0:
-            raise RuntimeError(
-                f"Audiveris завершился с кодом {process.returncode}. "
-                f"Подробности записаны в audiveris.log. {(output or '')[-1200:]}"
-            )
+        write_job(job_id, stage="recognizing", message="Audiveris распознаёт страницы по очереди…")
+        page_xml: list[Path] = []
+        logs: list[str] = []
+        for index, page in enumerate(sorted(cleaned_pages.glob("page-*.png")), start=1):
+            if read_job(job_id)["status"] == "cancelled":
+                return
+            write_job(job_id, message=f"Audiveris распознаёт страницу {index} из {page_count}…")
+            page_output = output_dir / f"page-{index:03d}"
+            page_output.mkdir(exist_ok=True)
+            try:
+                logs.append(run_checked(
+                    [AUDIVERIS_BIN, "-batch", "-transcribe", "-export", "-save", "-swap", "-output", str(page_output), "--", str(page)],
+                    timeout=OMR_TIMEOUT_SECONDS,
+                ))
+                mxl_files = sorted(page_output.rglob("*.mxl"))
+                if not mxl_files:
+                    raise RuntimeError("не создан файл MusicXML")
+                extracted = page_output / "page.musicxml"
+                extract_musicxml(mxl_files[0], extracted)
+                page_xml.append(extracted)
+            except Exception as page_error:  # Keep the remaining pages usable.
+                logs.append(f"Page {index}: {page_error}")
+        log_path.write_text("\n\n".join(logs)[-500_000:], encoding="utf-8")
+        if not page_xml:
+            raise RuntimeError("Не удалось распознать ни одной страницы PDF. Попробуйте более чёткий скан или экспорт PDF из нотного редактора.")
 
         write_job(
             job_id,
             stage="building",
             message="Проверяем и создаём партитуру MusicXML…",
         )
-        mxl_files = sorted(output_dir.rglob("*.mxl"))
-        if not mxl_files:
-            raise RuntimeError(
-                "Распознавание завершилось, но Audiveris не создал MusicXML. "
-                "Вероятно, на страницах не удалось уверенно найти печатные ноты."
-            )
-        extract_musicxml(mxl_files[0], directory / "result.musicxml")
+        merge_page_musicxml(page_xml, directory / "result.musicxml")
         write_job(
             job_id,
             status="ready",
             stage="ready",
             message=(
-                "Партитура готова. Автоматическое распознавание может содержать "
+                f"Партитура готова ({len(page_xml)} из {page_count} страниц). Автоматическое распознавание может содержать "
                 "ошибки — проверьте ноты перед обучением."
             ),
         )
@@ -361,7 +356,7 @@ def process_pdf(job_id: str) -> None:
                 job_id,
                 status="error",
                 stage="error",
-                message=str(exc)[:2000],
+                message="Не удалось распознать PDF. Попробуйте более чёткий скан или PDF, экспортированный из нотного редактора. Подробности сохранены в audiveris.log.",
             )
     finally:
         shutil.rmtree(prepared_pages, ignore_errors=True)
