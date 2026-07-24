@@ -371,7 +371,11 @@ def process_pdf(job_id: str) -> None:
         page_xml: list[Path] = []
         failed_pages: list[int] = []
         logs: list[str] = []
-        for index, page in enumerate(sorted(cleaned_pages.glob("page-*.png")), start=1):
+        # Do not feed the deskewed/trimmed image into OMR. It helps a noisy
+        # scan, but removes thin noteheads and ties from vector PDFs. Audiveris
+        # receives the untouched 300-DPI page; the cleaned copy is retained for
+        # thumbnails and OCR only.
+        for index, page in enumerate(pages, start=1):
             if read_job(job_id)["status"] == "cancelled":
                 return
             write_job(job_id, message=f"Audiveris распознаёт страницу {index} из {page_count}…")
