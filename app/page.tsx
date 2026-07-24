@@ -992,27 +992,19 @@ export default function Home() {
             if (autoScrollRef.current) {
               window.requestAnimationFrame(() => {
                 const scoreElement = scoreRef.current;
-                const marker = scoreElement?.querySelector<HTMLElement>(
-                  ".playback-highlight",
+                if (!scoreElement || !score) return;
+                // OMR cursor bounds are inconsistent between OSMD versions.
+                // The measure sequence is stable, so follow it proportionally
+                // through the rendered page instead of following a broken DOM
+                // cursor that can be placed at the very bottom.
+                const progress = Math.max(
+                  0,
+                  Math.min(1, (event.measure - 1) / Math.max(1, score.measureCount - 1)),
                 );
-                const viewport = scoreElement?.closest<HTMLElement>(".score-area");
-                if (!marker || !viewport) return;
-                const markerBox = marker.getBoundingClientRect();
-                const viewportBox = viewport.getBoundingClientRect();
-                const topInsideViewport =
-                  viewport.scrollTop +
-                  markerBox.top -
-                  viewportBox.top -
-                  viewport.clientHeight / 2;
-                if (viewport.scrollHeight > viewport.clientHeight + 1) {
-                  viewport.scrollTo({ top: topInsideViewport, behavior: "smooth" });
-                } else {
-                  // Desktop layout grows with the score, so the browser
-                  // document (not .score-area) is the scrollable viewport.
-                  window.scrollTo({
-                    top: window.scrollY + markerBox.top - window.innerHeight / 2,
-                    behavior: "smooth",
-                  });
+                const scoreTop = window.scrollY + scoreElement.getBoundingClientRect().top;
+                const target = scoreTop + scoreElement.scrollHeight * progress - window.innerHeight * 0.36;
+                if (Math.abs(window.scrollY - target) > 28) {
+                  window.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
                 }
               });
             }
