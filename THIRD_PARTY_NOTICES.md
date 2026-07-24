@@ -16,6 +16,17 @@ The downloaded package is verified against the SHA-256 digest published by the
 official GitHub release API. This repository does not contain or modify the
 Audiveris binary.
 
+## Salamander Grand Piano
+
+The piano audio files in `public/audio/piano` are selected samples from the
+Salamander Grand Piano by Alexander Holm, distributed under the Creative
+Commons Attribution 3.0 Unported license. The samples are served locally so
+playback does not depend on a third-party CDN.
+
+Source: https://github.com/sfzinstruments/SalamanderGrandPiano
+
+License: https://creativecommons.org/licenses/by/3.0/
+
 ## Other dependencies
 
 JavaScript and Python dependency licenses remain available in their respective

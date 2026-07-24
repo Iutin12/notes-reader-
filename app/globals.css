@@ -455,6 +455,7 @@ kbd { border: 1px solid var(--line); background: var(--paper); padding: 2px 5px;
 }
 .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 7px; }
 .paper {
+  position: relative;
   min-height: 760px;
   max-width: 1030px;
   margin: auto;
@@ -464,11 +465,14 @@ kbd { border: 1px solid var(--line); background: var(--paper); padding: 2px 5px;
   color: #111;
   cursor: crosshair;
 }
+.playback-highlight {
+  display: none !important;
+}
+.playback-highlight[hidden] { display: none; }
 .paper svg { max-width: 100%; height: auto; }
 .dark .paper svg { filter: invert(.86) hue-rotate(160deg); }
 .paper .osmd-cursor {
-  fill: var(--accent) !important;
-  opacity: .18 !important;
+  opacity: 0 !important;
   pointer-events: none;
   border-right: 2px solid var(--accent);
   transition: left .08s linear, top .08s linear, width .08s linear;
@@ -537,7 +541,17 @@ kbd { border: 1px solid var(--line); background: var(--paper); padding: 2px 5px;
 input[type="range"] { accent-color: var(--accent); }
 .transport-options { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 .select-control, .volume-control { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
-.select-control select { min-width: 82px; border: 1px solid var(--line); background: var(--paper); color: var(--ink); border-radius: 3px; padding: 6px; font-size: 11px; }
+.select-control select,
+.select-control input {
+  width: 88px;
+  min-width: 82px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  border-radius: 3px;
+  padding: 6px;
+  font-size: 11px;
+}
 .volume-control input { width: 85px; }
 .toggle-button { border: 1px solid var(--line); border-radius: 3px; background: var(--paper); padding: 8px 10px; cursor: pointer; font-size: 11px; }
 .toggle-button.on { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--paper)); }

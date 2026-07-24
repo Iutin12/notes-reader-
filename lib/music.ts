@@ -53,6 +53,59 @@ function pitchName(step: string, alter: number, octave: number, solfege = false)
   return `${solfege ? SOLFEGE[step] : step}${accidental}${octave}`;
 }
 
+function firstTempo(doc: Document) {
+  const soundTempo = Number(doc.querySelector("sound[tempo]")?.getAttribute("tempo"));
+  if (Number.isFinite(soundTempo) && soundTempo > 0) return soundTempo;
+
+  const metronomeTempo = Number(text(doc, "metronome per-minute", "0"));
+  if (Number.isFinite(metronomeTempo) && metronomeTempo > 0) {
+    return metronomeTempo;
+  }
+
+  // Some OMR sources retain a tempo mark as text, for example "♩ = 96"
+  // or "q = 96", instead of a structured <metronome> element.
+  for (const word of doc.querySelectorAll("direction-type words")) {
+    const match = word.textContent?.match(
+      /(?:♩|♪|q|quarter|bpm)\s*(?:=|:)?\s*(\d{2,3})\b/i,
+    );
+    const tempo = Number(match?.[1]);
+    if (Number.isFinite(tempo) && tempo >= 20 && tempo <= 400) return tempo;
+  }
+  return 96;
+}
+
+function writtenDurationBeats(note: Element) {
+  const values: Record<string, number> = {
+    longa: 16,
+    breve: 8,
+    whole: 4,
+    half: 2,
+    quarter: 1,
+    eighth: 0.5,
+    "16th": 0.25,
+    "32nd": 0.125,
+    "64th": 0.0625,
+    "128th": 0.03125,
+  };
+  let duration = values[text(note, ":scope > type")] || 0;
+  if (!duration) return 0;
+
+  // Every dot adds half of the preceding value: half. = 3 beats,
+  // quarter.. = 1.75 beats, and so on.
+  let addition = duration / 2;
+  note.querySelectorAll(":scope > dot").forEach(() => {
+    duration += addition;
+    addition /= 2;
+  });
+
+  const actualNotes = Number(text(note, ":scope > time-modification actual-notes", "0"));
+  const normalNotes = Number(text(note, ":scope > time-modification normal-notes", "0"));
+  if (actualNotes > 0 && normalNotes > 0) {
+    duration *= normalNotes / actualNotes;
+  }
+  return duration;
+}
+
 export function parseMusicXml(xml: string): ScoreData {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
   if (doc.querySelector("parsererror")) {
@@ -60,6 +113,21 @@ export function parseMusicXml(xml: string): ScoreData {
   }
   const score = doc.querySelector("score-partwise, score-timewise");
   if (!score) throw new Error("Это XML-файл, но в нём нет партитуры MusicXML.");
+
+  // OMR can mistake long staff lines for volta brackets. Endings without a
+  // single repeat are structurally invalid and make OSMD's playback iterator
+  // jump over large parts of the score while our linear audio keeps playing.
+  const hasInvalidEndings =
+    doc.querySelectorAll("repeat").length === 0 &&
+    doc.querySelectorAll("ending").length > 0;
+  if (hasInvalidEndings) {
+    doc.querySelectorAll("ending").forEach((ending) => ending.remove());
+  }
+  const sanitizedXml = hasInvalidEndings
+    ? xml
+        .replace(/<ending\b[^>]*\/\s*>/gi, "")
+        .replace(/<ending\b[^>]*>[\s\S]*?<\/ending\s*>/gi, "")
+    : xml;
 
   const title =
     text(doc, "work-title") ||
@@ -75,11 +143,7 @@ export function parseMusicXml(xml: string): ScoreData {
     partNames.set(id, text(part, "part-name", `Партия ${partNames.size + 1}`));
   });
 
-  let bpm = Number(text(doc, "sound[tempo]", "0"));
-  if (!bpm) {
-    const sound = doc.querySelector("sound[tempo]");
-    bpm = Number(sound?.getAttribute("tempo")) || 96;
-  }
+  let bpm = firstTempo(doc);
   let beatsPerMeasure = 4;
   const events: MusicEvent[] = [];
   let measureCount = 0;
@@ -105,8 +169,9 @@ export function parseMusicXml(xml: string): ScoreData {
           Number(text(measureNode, "attributes time beat-type", "0")) || 0;
         if (beats && beatType) measureBeats = beats * (4 / beatType);
         beatsPerMeasure = measureBeats;
-        const tempo = measureNode.querySelector("sound[tempo]")?.getAttribute("tempo");
-        if (tempo && events.length === 0) bpm = Number(tempo) || bpm;
+        if (events.length === 0) {
+          bpm = firstTempo(measureNode.ownerDocument || doc);
+        }
 
         const measureStart = absoluteBeat;
         let cursor = 0;
@@ -130,7 +195,13 @@ export function parseMusicXml(xml: string): ScoreData {
 
           const note = child;
           const rawDuration = Number(text(note, ":scope > duration", "0")) || 0;
-          const duration = rawDuration / divisions;
+          const encodedDuration = rawDuration / divisions;
+          const notationDuration = writtenDurationBeats(note);
+          // MusicXML's <duration> is authoritative when it is correct. Some
+          // OMR files, however, assign a quarter's numeric duration to a
+          // clearly written half/whole note. Never shorten a written note in
+          // that case: it must continue sounding until its visual value ends.
+          const duration = Math.max(encodedDuration, notationDuration);
           const isChord = Boolean(note.querySelector(":scope > chord"));
           const isRest = Boolean(note.querySelector(":scope > rest"));
           const relativeStart = isChord ? previousStart : cursor;
@@ -208,7 +279,7 @@ export function parseMusicXml(xml: string): ScoreData {
       (a, b) => a.startBeat - b.startBeat || a.partId.localeCompare(b.partId),
     ),
     parts: [...partNames].map(([id, name]) => ({ id, name })),
-    sourceXml: xml,
+    sourceXml: sanitizedXml,
   };
 }
 
