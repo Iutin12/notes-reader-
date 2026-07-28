@@ -16,7 +16,7 @@ import {
 } from "../lib/music";
 
 type Mode = "continuous" | "event" | "measure" | "fragment" | "training";
-type SavedScore = { name: string; fileName: string; xml: string; bpm?: number; savedAt: number; edits?: Array<{ id: string; midi: number[] }> };
+type SavedScore = { name: string; fileName: string; xml: string; bpm?: number; savedAt: number; edits?: Array<{ id: string; midi: number[]; durationBeats?: number }> };
 type OmrStage =
   | "uploading"
   | "queued"
@@ -76,6 +76,8 @@ type ScoreClickPosition = {
 };
 type PianoKeyHand = "left" | "right" | "both";
 type PianoKeyState = { midi: number; hand: PianoKeyHand };
+type EditorChange = { midi: number[]; durationBeats: number };
+type EditorDrag = { eventId: string; midiIndex: number; kind: "pitch" | "duration"; startX: number; startY: number; midi: number; durationBeats: number; rollWidth: number };
 
 const PIANO_LOW_MIDI = 36; // C2
 const PIANO_HIGH_MIDI = 96; // C7
@@ -395,8 +397,10 @@ export default function Home() {
   const [autoScroll, setAutoScroll] = useState(false);
   const [keyboardGuide, setKeyboardGuide] = useState(false);
   const [trainingAttempt, setTrainingAttempt] = useState({ eventId: "", pressed: [] as number[], feedback: "" });
-  const [correctionMode, setCorrectionMode] = useState(false);
-  const [correctionEdit, setCorrectionEdit] = useState({ eventId: "", input: "" });
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorMeasure, setEditorMeasure] = useState(1);
+  const [editorDraft, setEditorDraft] = useState<Record<string, EditorChange>>({});
+  const [editorDrag, setEditorDrag] = useState<EditorDrag | null>(null);
   const [countIn, setCountIn] = useState(0);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [omrJob, setOmrJob] = useState<OmrJob | null>(null);
@@ -473,10 +477,15 @@ export default function Home() {
   const trainingMode = mode === "training";
   const trainingPressed = trainingAttempt.eventId === active?.id ? trainingAttempt.pressed : [];
   const trainingFeedback = trainingAttempt.eventId === active?.id ? trainingAttempt.feedback : "";
-  const correctionInput = correctionEdit.eventId === active?.id
-    ? correctionEdit.input
-    : active?.midi.join(", ") || "";
   const currentMeasure = active?.measure || 1;
+  const editorEvents = useMemo(() => score
+    ? score.events
+      .filter((event) => event.measure === editorMeasure && !event.isRest && editorDraft[event.id])
+      .map((event) => ({ ...event, ...editorDraft[event.id] }))
+    : [], [editorDraft, editorMeasure, score]);
+  const editorPitches = editorEvents.flatMap((event) => event.midi);
+  const editorLow = Math.max(21, (editorPitches.length ? Math.min(...editorPitches) : 48) - 5);
+  const editorHigh = Math.min(108, (editorPitches.length ? Math.max(...editorPitches) : 72) + 5);
 
   const clearTimers = useCallback(() => {
     timersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -1253,44 +1262,54 @@ export default function Home() {
     }
   }, [active?.id, activeChordKeys, moveEvent, trainingAttempt, trainingMode]);
 
-  const applyCorrection = useCallback(() => {
-    if (!score || !active) return;
-    const midi = correctionInput
-      .split(/[\s,;]+/)
-      .map((value) => Number(value))
-      .filter((value) => Number.isInteger(value) && value >= 0 && value <= 127);
-    const uniqueMidi = [...new Set(midi)];
-    if (!uniqueMidi.length) {
-      setNotice("Введите хотя бы одну MIDI-ноту: например, 60, 64, 67.");
-      return;
-    }
+  const openScoreEditor = useCallback(() => {
+    if (!score) return;
+    stop(false);
+    const measure = active?.measure || 1;
+    const draft: Record<string, EditorChange> = {};
+    score.events.filter((event) => event.measure === measure && !event.isRest).forEach((event) => {
+      draft[event.id] = { midi: [...event.midi], durationBeats: event.durationBeats };
+    });
+    setEditorMeasure(measure);
+    setEditorDraft(draft);
+    setEditorOpen(true);
+  }, [active?.measure, score, stop]);
+
+  const saveScoreEditor = useCallback(() => {
+    if (!score) return;
     setScore((current) => current ? {
       ...current,
-      events: current.events.map((event) => event.id === active.id
-        ? { ...event, midi: uniqueMidi, names: uniqueMidi.map((note) => nameForMidi(note, false)) }
+      events: current.events.map((event) => editorDraft[event.id]
+        ? {
+            ...event,
+            midi: editorDraft[event.id].midi,
+            durationBeats: editorDraft[event.id].durationBeats,
+            names: editorDraft[event.id].midi.map((midi) => nameForMidi(midi, false)),
+          }
         : event),
     } : current);
     const nextSaved = loadSaved().map((item) => {
       if (item.fileName !== fileName) return item;
-      const edits = (item.edits || []).filter((edit) => edit.id !== active.id);
-      return { ...item, edits: [...edits, { id: active.id, midi: uniqueMidi }] };
+      const changedIds = new Set(Object.keys(editorDraft));
+      const edits = (item.edits || []).filter((edit) => !changedIds.has(edit.id));
+      return {
+        ...item,
+        edits: [...edits, ...Object.entries(editorDraft).map(([id, change]) => ({
+          id,
+          midi: change.midi,
+          durationBeats: change.durationBeats,
+        }))],
+      };
     });
     localStorage.setItem("notera-scores", JSON.stringify(nextSaved));
     setSaved(nextSaved);
-    setNotice("Ноты текущего голоса исправлены для воспроизведения, клавиатуры и сохранённой версии.");
-  }, [active, correctionInput, fileName, score]);
+    setEditorOpen(false);
+    setNotice("Изменения такта сохранены для воспроизведения, клавиатуры и повторного открытия.");
+  }, [editorDraft, fileName, score]);
 
-  const toggleCorrectionKey = useCallback((midi: number) => {
-    if (!correctionMode || !active) return;
-    const current = correctionInput
-      .split(/[\s,;]+/)
-      .map((value) => Number(value))
-      .filter((value) => Number.isInteger(value) && value >= 0 && value <= 127);
-    const next = current.includes(midi)
-      ? current.filter((value) => value !== midi)
-      : [...current, midi].sort((a, b) => a - b);
-    setCorrectionEdit({ eventId: active.id, input: next.join(", ") });
-  }, [active, correctionInput, correctionMode]);
+  const updateEditorChange = useCallback((eventId: string, update: (change: EditorChange) => EditorChange) => {
+    setEditorDraft((draft) => draft[eventId] ? { ...draft, [eventId]: update(draft[eventId]) } : draft);
+  }, []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1577,8 +1596,14 @@ export default function Home() {
                     if (item.bpm) data.bpm = item.bpm;
                     if (item.edits?.length) {
                       const edits = new Map(item.edits.map((edit) => [edit.id, edit.midi]));
+                      const durations = new Map(item.edits.map((edit) => [edit.id, edit.durationBeats]));
                       data.events = data.events.map((event) => edits.has(event.id)
-                        ? { ...event, midi: edits.get(event.id)!, names: edits.get(event.id)!.map((midi) => nameForMidi(midi, false)) }
+                        ? {
+                            ...event,
+                            midi: edits.get(event.id)!,
+                            durationBeats: durations.get(event.id) ?? event.durationBeats,
+                            names: edits.get(event.id)!.map((midi) => nameForMidi(midi, false)),
+                          }
                         : event);
                     }
                     openScore(data, item.fileName);
@@ -1724,7 +1749,7 @@ export default function Home() {
         </div>
       </section>
 
-      <section className={`transport ${(keyboardGuide || trainingMode || correctionMode) ? "with-keyboard" : ""}`} aria-label="Управление воспроизведением">
+      <section className={`transport ${(keyboardGuide || trainingMode) ? "with-keyboard" : ""}`} aria-label="Управление воспроизведением">
         <div className="transport-main">
           <button className="control-button" onClick={() => moveEvent(-1)} aria-label="Предыдущее событие"><Icon>‹</Icon></button>
           <button className="play-button" onClick={togglePlay} aria-label={playing ? "Пауза" : "Воспроизвести"}>{playing ? "Ⅱ" : "▶"}</button>
@@ -1775,26 +1800,93 @@ export default function Home() {
           <label className="volume-control"><span>Громкость</span><input type="range" min={0} max={1} step={0.01} value={volume} onChange={(event) => { const value = Number(event.target.value); setVolume(value); synthRef.current.setVolume(value); }} /></label>
           <button className={`toggle-button ${metronome ? "on" : ""}`} onClick={() => setMetronome(!metronome)}><span>♩</span> Метроном</button>
           <button className={`toggle-button ${repeat ? "on" : ""}`} onClick={() => setRepeat(!repeat)}><span>↻</span> Повтор</button>
-          <button className={`toggle-button ${correctionMode ? "on" : ""}`} onClick={() => {
-            if (!correctionMode) setCorrectionEdit({ eventId: active?.id || "", input: active?.midi.join(", ") || "" });
-            setCorrectionMode((value) => !value);
-          }}>✎ Исправить</button>
+          <button className="toggle-button" onClick={openScoreEditor}>✎ Редактор</button>
         </div>
-        {correctionMode && active && (
-          <div className="correction-panel">
-            <b>Исправление текущего голоса</b>
-            <span>Введите MIDI-номера нот: 60 = C4, или отметьте клавиши ниже. Изменение влияет на звук, клавиатуру и сохранённую партитуру.</span>
-            <input value={correctionInput} onChange={(event) => setCorrectionEdit({ eventId: active?.id || "", input: event.target.value })} aria-label="MIDI-ноты текущего аккорда" placeholder="60, 64, 67" />
-            <button className="toggle-button" onClick={applyCorrection}>Применить</button>
-          </div>
-        )}
-        {(keyboardGuide || trainingMode || correctionMode) && (
+        {(keyboardGuide || trainingMode) && (
           <div className="keyboard-guide-wrap">
             {trainingMode && <p className="training-status">{trainingFeedback || "Нажмите все клавиши показанного аккорда."}</p>}
-            <PianoKeyboard keys={activeChordKeys} pressedNotes={trainingMode ? trainingPressed : correctionMode ? correctionInput.split(/[\s,;]+/).map(Number) : []} onKeyPress={trainingMode ? handleTrainingKey : correctionMode ? toggleCorrectionKey : undefined} />
+            <PianoKeyboard keys={activeChordKeys} pressedNotes={trainingMode ? trainingPressed : []} onKeyPress={trainingMode ? handleTrainingKey : undefined} />
           </div>
         )}
       </section>
+
+      {editorOpen && (
+        <div className="modal-backdrop editor-backdrop" onMouseDown={() => setEditorOpen(false)}>
+          <section className="score-editor" role="dialog" aria-modal="true" aria-labelledby="editor-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-heading">
+              <div><span className="eyebrow">Ручное исправление</span><h2 id="editor-title">Редактор такта {editorMeasure}</h2></div>
+              <button onClick={() => setEditorOpen(false)} aria-label="Закрыть редактор">×</button>
+            </div>
+            <p className="editor-help">Перетаскивайте ноту вверх или вниз для изменения высоты. Потяните за её правый край, чтобы изменить длительность. Ноты одного аккорда редактируются по отдельности.</p>
+            <div
+              className="score-editor-roll"
+              onPointerMove={(event) => {
+                if (!editorDrag || !score) return;
+                if (editorDrag.kind === "pitch") {
+                  const steps = Math.round((editorDrag.startY - event.clientY) / 18);
+                  const midi = Math.max(0, Math.min(127, editorDrag.midi + steps));
+                  updateEditorChange(editorDrag.eventId, (change) => {
+                    if (change.midi[editorDrag.midiIndex] === midi) return change;
+                    const next = [...change.midi];
+                    next[editorDrag.midiIndex] = midi;
+                    return { ...change, midi: next };
+                  });
+                } else {
+                  const deltaBeats = ((event.clientX - editorDrag.startX) / editorDrag.rollWidth) * score.beatsPerMeasure;
+                  const durationBeats = Math.max(0.125, Math.min(score.beatsPerMeasure, Math.round((editorDrag.durationBeats + deltaBeats) * 4) / 4));
+                  updateEditorChange(editorDrag.eventId, (change) => change.durationBeats === durationBeats ? change : { ...change, durationBeats });
+                }
+              }}
+              onPointerUp={() => setEditorDrag(null)}
+              onPointerCancel={() => setEditorDrag(null)}
+            >
+              {Array.from({ length: editorHigh - editorLow + 1 }, (_, index) => editorHigh - index).map((midi) => (
+                <div className={`editor-pitch-line ${midi % 12 === 0 ? "octave" : ""}`} key={midi}>
+                  {midi % 12 === 0 && <span>{nameForMidi(midi, true)}</span>}
+                </div>
+              ))}
+              {Array.from({ length: score.beatsPerMeasure + 1 }, (_, beat) => <i className="editor-beat-line" style={{ left: `${(beat / score.beatsPerMeasure) * 100}%` }} key={beat} />)}
+              {editorEvents.flatMap((event) => event.midi.map((midi, midiIndex) => {
+                const top = ((editorHigh - midi) / Math.max(1, editorHigh - editorLow + 1)) * 100;
+                const left = (((event.startBeat % score.beatsPerMeasure) / score.beatsPerMeasure) * 100);
+                const width = Math.max(3, (event.durationBeats / score.beatsPerMeasure) * 100);
+                return (
+                  <button
+                    type="button"
+                    className={`editor-note staff-${event.staff}`}
+                    key={`${event.id}-${midiIndex}`}
+                    style={{ top: `${top}%`, left: `${left}%`, width: `${width}%` }}
+                    title={`${nameForMidi(midi, true)} · перетащите для изменения высоты`}
+                    onPointerDown={(pointerEvent) => {
+                      const roll = pointerEvent.currentTarget.closest<HTMLElement>(".score-editor-roll");
+                      if (!roll) return;
+                      pointerEvent.currentTarget.setPointerCapture(pointerEvent.pointerId);
+                      setEditorDrag({ eventId: event.id, midiIndex, kind: "pitch", startX: pointerEvent.clientX, startY: pointerEvent.clientY, midi, durationBeats: event.durationBeats, rollWidth: roll.getBoundingClientRect().width });
+                    }}
+                  >
+                    <span>{nameForMidi(midi, true)}</span>
+                    <i
+                      className="editor-resize"
+                      aria-label="Изменить длительность"
+                      onPointerDown={(pointerEvent) => {
+                        pointerEvent.stopPropagation();
+                        const roll = pointerEvent.currentTarget.closest<HTMLElement>(".score-editor-roll");
+                        if (!roll) return;
+                        pointerEvent.currentTarget.setPointerCapture(pointerEvent.pointerId);
+                        setEditorDrag({ eventId: event.id, midiIndex, kind: "duration", startX: pointerEvent.clientX, startY: pointerEvent.clientY, midi, durationBeats: event.durationBeats, rollWidth: roll.getBoundingClientRect().width });
+                      }}
+                    />
+                  </button>
+                );
+              }))}
+            </div>
+            <div className="editor-actions">
+              <button className="ghost-button" onClick={() => setEditorOpen(false)}>Отменить</button>
+              <button className="primary-button" onClick={saveScoreEditor}>Сохранить изменения</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {settingsOpen && (
         <div className="modal-backdrop" onMouseDown={() => setSettingsOpen(false)}>
