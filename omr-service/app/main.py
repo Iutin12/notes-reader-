@@ -57,6 +57,7 @@ class JobPublic(BaseModel):
     message: str
     page_count: int | None = None
     detected_bpm: int | None = None
+    progress: int | None = None
     created_at: float
     updated_at: float
     result_url: str | None = None
@@ -111,6 +112,7 @@ def public_job(job: dict[str, Any]) -> JobPublic:
                 "message",
                 "page_count",
                 "detected_bpm",
+                "progress",
                 "created_at",
                 "updated_at",
             )
@@ -323,6 +325,7 @@ def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
         job_id,
         status="processing",
         stage="recognizing",
+        progress=15,
         message="Audiveris распознаёт партитуру локально…",
     )
     try:
@@ -343,12 +346,13 @@ def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
         mxl_files = sorted(output_dir.rglob("*.mxl"))
         if not mxl_files:
             raise RuntimeError("Audiveris не создал файл MusicXML.")
-        write_job(job_id, stage="building", message="Создаём партитуру MusicXML…")
+        write_job(job_id, stage="building", progress=88, message="Создаём партитуру MusicXML…")
         extract_musicxml(mxl_files[0], directory / "result.musicxml")
         write_job(
             job_id,
             status="ready",
             stage="ready",
+            progress=100,
             message=(
                 f"Партитура готова: обработано {page_count} страниц локально. "
                 "Проверьте высоту и длительности нот."
@@ -388,6 +392,7 @@ def process_pdf(job_id: str) -> None:
             job_id,
             status="processing",
             stage="preparing",
+            progress=5,
             message="Проверяем страницы и подготавливаем изображение…",
         )
         reader = PdfReader(str(source), strict=False)
@@ -398,7 +403,7 @@ def process_pdf(job_id: str) -> None:
             raise RuntimeError(
                 f"В PDF {page_count} страниц. Разрешено не более {MAX_PDF_PAGES}."
             )
-        write_job(job_id, page_count=page_count)
+        write_job(job_id, page_count=page_count, progress=10)
 
         if NATIVE_PORTABLE:
             process_pdf_portable(job_id, source, page_count)
@@ -465,6 +470,7 @@ def process_pdf(job_id: str) -> None:
                 ],
                 timeout=30,
             )
+            write_job(job_id, progress=12 + round(index / len(pages) * 18))
 
         # A scan has no PDF text layer, so retry the tempo mark with OCR after
         # rendering the first page. The value is sent back in the job status.
@@ -473,7 +479,7 @@ def process_pdf(job_id: str) -> None:
             if detected_bpm:
                 write_job(job_id, detected_bpm=detected_bpm)
 
-        write_job(job_id, stage="recognizing", message="Audiveris распознаёт страницы по очереди…")
+        write_job(job_id, stage="recognizing", progress=30, message="Audiveris распознаёт страницы по очереди…")
         page_xml: list[Path] = []
         failed_pages: list[int] = []
         logs: list[str] = []
@@ -484,7 +490,11 @@ def process_pdf(job_id: str) -> None:
         for index, page in enumerate(pages, start=1):
             if read_job(job_id)["status"] == "cancelled":
                 return
-            write_job(job_id, message=f"Audiveris распознаёт страницу {index} из {page_count}…")
+            write_job(
+                job_id,
+                progress=30 + round((index - 1) / page_count * 60),
+                message=f"Audiveris распознаёт страницу {index} из {page_count}…",
+            )
             page_output = output_dir / f"page-{index:03d}"
             page_output.mkdir(exist_ok=True)
             candidates: list[tuple[tuple[int, int, int], Path, str]] = []
@@ -515,6 +525,7 @@ def process_pdf(job_id: str) -> None:
                 page_xml.append(extracted)
             else:
                 failed_pages.append(index)
+            write_job(job_id, progress=30 + round(index / page_count * 60))
         log_path.write_text("\n\n".join(logs)[-500_000:], encoding="utf-8")
         if failed_pages:
             raise RuntimeError(
@@ -524,6 +535,7 @@ def process_pdf(job_id: str) -> None:
         write_job(
             job_id,
             stage="building",
+            progress=92,
             message="Проверяем и создаём партитуру MusicXML…",
         )
         merge_page_musicxml(page_xml, directory / "result.musicxml")
@@ -531,6 +543,7 @@ def process_pdf(job_id: str) -> None:
             job_id,
             status="ready",
             stage="ready",
+            progress=100,
             message=(
                 f"Партитура готова: все {page_count} страниц распознаны. Автоматическое распознавание может содержать "
                 "ошибки — проверьте ноты перед обучением."
@@ -605,6 +618,7 @@ async def create_job(
             file_name=Path(file.filename or "score.pdf").name[:200],
             status="queued",
             stage="queued",
+            progress=1,
             message="Файл загружен и поставлен в очередь.",
             page_count=None,
             detected_bpm=detected_bpm,

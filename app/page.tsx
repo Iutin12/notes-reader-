@@ -34,6 +34,7 @@ type OmrJob = {
   message: string;
   page_count: number | null;
   detected_bpm: number | null;
+  progress?: number;
   result_url: string | null;
   thumbnails: string[];
 };
@@ -604,6 +605,7 @@ export default function Home() {
         message: "Передаём PDF в изолированный сервис распознавания…",
         page_count: null,
         detected_bpm: null,
+        progress: 1,
         result_url: null,
         thumbnails: [],
       });
@@ -670,6 +672,7 @@ export default function Home() {
               : message,
           page_count: current?.page_count || null,
           detected_bpm: current?.detected_bpm || null,
+          progress: current?.progress || 0,
           result_url: null,
           thumbnails: current?.thumbnails || [],
         }));
@@ -1005,17 +1008,16 @@ export default function Home() {
               window.requestAnimationFrame(() => {
                 const scoreElement = scoreRef.current;
                 if (!scoreElement || !score) return;
-                // OMR cursor bounds are inconsistent between OSMD versions.
-                // The measure sequence is stable, so follow it proportionally
-                // through the rendered page instead of following a broken DOM
-                // cursor that can be placed at the very bottom.
-                const progress = Math.max(
-                  0,
-                  Math.min(1, (event.measure - 1) / Math.max(1, score.measureCount - 1)),
-                );
-                const scoreTop = window.scrollY + scoreElement.getBoundingClientRect().top;
-                const target = scoreTop + scoreElement.scrollHeight * progress - window.innerHeight * 0.36;
-                if (Math.abs(window.scrollY - target) > 28) {
+                const cursorMarker = scoreElement.querySelector<HTMLElement>(".playback-highlight");
+                const markerRect = cursorMarker && !cursorMarker.hidden
+                  ? cursorMarker.getBoundingClientRect()
+                  : null;
+                // Follow the actual cursor marker. A measure-based ratio jumps
+                // to the bottom on pages with uneven system spacing.
+                const target = markerRect
+                  ? window.scrollY + markerRect.top - window.innerHeight * 0.42
+                  : window.scrollY;
+                if (markerRect && Math.abs(window.scrollY - target) > 28) {
                   window.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
                 }
               });
@@ -1226,6 +1228,9 @@ export default function Home() {
       (item) => item.stage === omrJob.stage,
     );
     const failed = omrJob.stage === "error";
+    const progress = Math.max(0, Math.min(100, omrJob.progress ?? (
+      currentStageIndex < 0 ? 0 : Math.round((currentStageIndex / OMR_STAGES.length) * 100)
+    )));
     return (
       <main className={`processing-page ${theme}`}>
         <header className="landing-header">
@@ -1244,6 +1249,13 @@ export default function Home() {
           </span>
           <h1>{failed ? "Не удалось прочитать ноты" : "Превращаем PDF в партитуру"}</h1>
           <p className={failed ? "processing-error" : ""}>{omrJob.message}</p>
+
+          {!failed && (
+            <div className="processing-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
+              <div className="processing-progress-track"><i style={{ width: `${progress}%` }} /></div>
+              <span>{progress}%</span>
+            </div>
+          )}
 
           {!failed && (
             <ol className="processing-steps">

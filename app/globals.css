@@ -271,6 +271,9 @@ button, label { -webkit-tap-highlight-color: transparent; }
   line-height: 1.6;
 }
 .processing-card > p.processing-error { color: var(--accent-dark); }
+.processing-progress { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; width: min(620px, 100%); margin: 24px auto 0; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.processing-progress-track { height: 8px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--ink) 13%, transparent); box-shadow: inset 0 1px 2px rgba(0,0,0,.09); }
+.processing-progress-track i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), #f6a068); transition: width .45s ease; }
 .processing-steps {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -466,11 +469,14 @@ kbd { border: 1px solid var(--line); background: var(--paper); padding: 2px 5px;
   cursor: crosshair;
 }
 .playback-highlight {
-  /* Keep its geometry for auto-scroll while noteheads are highlighted via
-     OSMD itself. display:none makes getBoundingClientRect() always zero. */
   position: absolute;
   pointer-events: none;
-  visibility: hidden;
+  z-index: 2;
+  border-left: 3px solid #15945b;
+  border-radius: 5px;
+  background: color-mix(in srgb, #43b77d 28%, transparent);
+  box-shadow: 0 0 0 2px rgba(21, 148, 91, .12), 0 1px 8px rgba(14, 83, 49, .2);
+  transition: left .08s linear, top .08s linear, height .08s linear;
 }
 .playback-highlight[hidden] { display: none; }
 .paper svg { max-width: 100%; height: auto; }
