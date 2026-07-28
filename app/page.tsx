@@ -76,8 +76,15 @@ type ScoreClickPosition = {
 };
 type PianoKeyHand = "left" | "right" | "both";
 type PianoKeyState = { midi: number; hand: PianoKeyHand };
-type EditorChange = { midi: number[]; durationBeats: number };
-type EditorDrag = { eventId: string; midiIndex: number; kind: "pitch" | "duration"; startX: number; startY: number; midi: number; durationBeats: number; rollWidth: number };
+type EditorNote = {
+  id: string;
+  midi: number;
+  startBeat: number;
+  durationBeats: number;
+  staff: number;
+  voice: string;
+};
+type EditorDrag = { noteId: string; startX: number; startY: number; midi: number; startBeat: number; staff: number; rollWidth: number };
 
 const PIANO_LOW_MIDI = 36; // C2
 const PIANO_HIGH_MIDI = 96; // C7
@@ -107,64 +114,74 @@ function notationForBeats(beats: number) {
   );
 }
 
-function applyEditsToMusicXml(xml: string, edits: Record<string, EditorChange>) {
+function applyMeasureEditorToMusicXml(
+  xml: string,
+  partId: string,
+  measureNumber: number,
+  notes: EditorNote[],
+  beatsPerMeasure: number,
+) {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
   if (doc.querySelector("parsererror")) return xml;
-  for (const [eventId, change] of Object.entries(edits)) {
-    const match = eventId.match(/^(.*)-m(\d+)-n(\d+)$/);
-    if (!match) continue;
-    const [, partId, measureNumber, noteIndexText] = match;
-    const part = [...doc.querySelectorAll("score-partwise > part")]
-      .find((node) => node.getAttribute("id") === partId);
-    if (!part) continue;
-    const measure = [...part.querySelectorAll(":scope > measure")]
-      .find((node, index) => (node.getAttribute("number") || String(index + 1)) === measureNumber);
-    if (!measure) continue;
-    const notes = [...measure.children].filter((node) => node.localName === "note");
-    const first = notes[Number(noteIndexText)];
-    if (!first) continue;
-    const chordNotes = [first];
-    for (let index = Number(noteIndexText) + 1; index < notes.length; index += 1) {
-      if (!notes[index].querySelector(":scope > chord")) break;
-      chordNotes.push(notes[index]);
-    }
-    let divisions = 1;
-    for (const previousMeasure of part.querySelectorAll(":scope > measure")) {
-      const found = Number(previousMeasure.querySelector(":scope > attributes > divisions")?.textContent || "0");
-      if (found) divisions = found;
-      if (previousMeasure === measure) break;
-    }
-    const [, type, dots] = notationForBeats(change.durationBeats);
-    chordNotes.forEach((note, index) => {
-      const pitch = musicXmlPitch(change.midi[index] ?? change.midi[change.midi.length - 1]);
-      const pitchNode = note.querySelector(":scope > pitch");
-      if (!pitchNode) return;
-      const set = (selector: string, value: string) => {
-        let node = pitchNode?.querySelector(`:scope > ${selector}`);
-        if (!node) {
-          node = doc.createElement(selector);
-          pitchNode?.appendChild(node);
-        }
-        node.textContent = value;
-      };
-      set("step", pitch.step);
-      set("alter", String(pitch.alter));
-      set("octave", String(pitch.octave));
-      const duration = note.querySelector(":scope > duration");
-      if (duration) duration.textContent = String(Math.max(1, Math.round(change.durationBeats * divisions)));
-      let typeNode = note.querySelector(":scope > type");
-      if (!typeNode) {
-        typeNode = doc.createElement("type");
-        note.appendChild(typeNode);
-      }
-      typeNode.textContent = type;
-      note.querySelectorAll(":scope > dot").forEach((dot) => dot.remove());
-      for (let dotIndex = 0; dotIndex < dots; dotIndex += 1) {
-        const dot = doc.createElement("dot");
-        typeNode.insertAdjacentElement("afterend", dot);
-      }
-    });
+  const part = [...doc.querySelectorAll("score-partwise > part")]
+    .find((node) => node.getAttribute("id") === partId);
+  if (!part) return xml;
+  const measure = [...part.querySelectorAll(":scope > measure")]
+    .find((node, index) => (node.getAttribute("number") || String(index + 1)) === String(measureNumber));
+  if (!measure) return xml;
+  let divisions = 1;
+  for (const previousMeasure of part.querySelectorAll(":scope > measure")) {
+    const found = Number(previousMeasure.querySelector(":scope > attributes > divisions")?.textContent || "0");
+    if (found) divisions = found;
+    if (previousMeasure === measure) break;
   }
+  [...measure.children].filter((node) => ["note", "backup", "forward"].includes(node.localName)).forEach((node) => node.remove());
+  const finalBarline = measure.querySelector(":scope > barline");
+  const insertMusicNode = (node: Element) => measure.insertBefore(node, finalBarline);
+  const appendText = (parent: Element, name: string, value: string) => {
+    const child = doc.createElement(name);
+    child.textContent = value;
+    parent.appendChild(child);
+  };
+  const appendForward = (duration: number) => {
+    if (duration <= 0) return;
+    const forward = doc.createElement("forward");
+    appendText(forward, "duration", String(Math.max(1, Math.round(duration * divisions))));
+    insertMusicNode(forward);
+  };
+  const orderedStaves = [...new Set(notes.map((note) => note.staff))].sort((a, b) => a - b);
+  orderedStaves.forEach((staff, staffIndex) => {
+    if (staffIndex > 0) {
+      const backup = doc.createElement("backup");
+      appendText(backup, "duration", String(Math.max(1, Math.round(beatsPerMeasure * divisions))));
+      insertMusicNode(backup);
+    }
+    let cursor = 0;
+    const staffNotes = notes.filter((note) => note.staff === staff).sort((a, b) => a.startBeat - b.startBeat || a.midi - b.midi);
+    for (const group of Object.values(Object.groupBy(staffNotes, (note) => String(note.startBeat)))) {
+      if (!group?.length) continue;
+      const startBeat = group[0].startBeat;
+      appendForward(startBeat - cursor);
+      group.forEach((note, index) => {
+        const element = doc.createElement("note");
+        if (index) element.appendChild(doc.createElement("chord"));
+        const pitch = musicXmlPitch(note.midi);
+        const pitchNode = doc.createElement("pitch");
+        appendText(pitchNode, "step", pitch.step);
+        if (pitch.alter) appendText(pitchNode, "alter", String(pitch.alter));
+        appendText(pitchNode, "octave", String(pitch.octave));
+        element.appendChild(pitchNode);
+        appendText(element, "duration", String(Math.max(1, Math.round(note.durationBeats * divisions))));
+        const [, type, dots] = notationForBeats(note.durationBeats);
+        appendText(element, "voice", note.voice || "1");
+        appendText(element, "type", type);
+        for (let indexDot = 0; indexDot < dots; indexDot += 1) element.appendChild(doc.createElement("dot"));
+        appendText(element, "staff", String(staff));
+        insertMusicNode(element);
+      });
+      cursor = Math.max(cursor, startBeat + Math.max(...group.map((note) => note.durationBeats)));
+    }
+  });
   return new XMLSerializer().serializeToString(doc);
 }
 
@@ -480,7 +497,9 @@ export default function Home() {
   const [trainingAttempt, setTrainingAttempt] = useState({ eventId: "", pressed: [] as number[], feedback: "" });
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorMeasure, setEditorMeasure] = useState(1);
-  const [editorDraft, setEditorDraft] = useState<Record<string, EditorChange>>({});
+  const [editorPartId, setEditorPartId] = useState("");
+  const [editorNotes, setEditorNotes] = useState<EditorNote[]>([]);
+  const [selectedEditorNote, setSelectedEditorNote] = useState("");
   const [editorDrag, setEditorDrag] = useState<EditorDrag | null>(null);
   const [countIn, setCountIn] = useState(0);
   const [theme, setTheme] = useState<"light" | "dark">("light");
@@ -559,14 +578,6 @@ export default function Home() {
   const trainingPressed = trainingAttempt.eventId === active?.id ? trainingAttempt.pressed : [];
   const trainingFeedback = trainingAttempt.eventId === active?.id ? trainingAttempt.feedback : "";
   const currentMeasure = active?.measure || 1;
-  const editorEvents = useMemo(() => score
-    ? score.events
-      .filter((event) => event.measure === editorMeasure && !event.isRest && editorDraft[event.id])
-      .map((event) => ({ ...event, ...editorDraft[event.id] }))
-    : [], [editorDraft, editorMeasure, score]);
-  const editorPitches = editorEvents.flatMap((event) => event.midi);
-  const editorLow = Math.max(21, (editorPitches.length ? Math.min(...editorPitches) : 48) - 5);
-  const editorHigh = Math.min(108, (editorPitches.length ? Math.max(...editorPitches) : 72) + 5);
 
   const clearTimers = useCallback(() => {
     timersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -1347,57 +1358,41 @@ export default function Home() {
     if (!score) return;
     stop(false);
     const measure = active?.measure || 1;
-    const draft: Record<string, EditorChange> = {};
-    score.events.filter((event) => event.measure === measure && !event.isRest).forEach((event) => {
-      draft[event.id] = { midi: [...event.midi], durationBeats: event.durationBeats };
-    });
+    const partId = active?.partId || score.parts[0]?.id || "P1";
+    const notes = score.events
+      .filter((event) => event.measure === measure && event.partId === partId && !event.isRest)
+      .flatMap((event) => event.midi.map((midi, index) => ({
+        id: `${event.id}-${index}`,
+        midi,
+        startBeat: event.startBeat % score.beatsPerMeasure,
+        durationBeats: event.durationBeats,
+        staff: event.staff,
+        voice: event.voice,
+      })));
     setEditorMeasure(measure);
-    setEditorDraft(draft);
+    setEditorPartId(partId);
+    setEditorNotes(notes);
+    setSelectedEditorNote(notes[0]?.id || "");
     setEditorOpen(true);
-  }, [active?.measure, score, stop]);
+  }, [active?.measure, active?.partId, score, stop]);
 
   const saveScoreEditor = useCallback(() => {
     if (!score) return;
     const updatedXml = score.sourceXml
-      ? applyEditsToMusicXml(score.sourceXml, editorDraft)
+      ? applyMeasureEditorToMusicXml(score.sourceXml, editorPartId, editorMeasure, editorNotes, score.beatsPerMeasure)
       : undefined;
-    setScore((current) => current ? {
-      ...current,
-      sourceXml: updatedXml || current.sourceXml,
-      events: current.events.map((event) => editorDraft[event.id]
-        ? {
-            ...event,
-            midi: editorDraft[event.id].midi,
-            durationBeats: editorDraft[event.id].durationBeats,
-            names: editorDraft[event.id].midi.map((midi) => nameForMidi(midi, false)),
-          }
-        : event),
-    } : current);
-    const nextSaved = loadSaved().map((item) => {
-      if (item.fileName !== fileName) return item;
-      const changedIds = new Set(Object.keys(editorDraft));
-      const edits = (item.edits || []).filter((edit) => !changedIds.has(edit.id));
-      return {
-        ...item,
-        xml: updatedXml || item.xml,
-        edits: [...edits, ...Object.entries(editorDraft).map(([id, change]) => ({
-          id,
-          midi: change.midi,
-          durationBeats: change.durationBeats,
-        }))],
-      };
-    });
+    const nextScore = updatedXml ? parseMusicXml(updatedXml) : score;
+    setScore({ ...nextScore, title: score.title });
+    const nextSaved = loadSaved().map((item) => item.fileName === fileName
+      ? { ...item, xml: updatedXml || item.xml, savedAt: Date.now() }
+      : item);
     localStorage.setItem("notera-scores", JSON.stringify(nextSaved));
     setSaved(nextSaved);
     setEditorOpen(false);
     setNotice(updatedXml
-      ? "Изменения сохранены. Партитура перерисована с новыми нотами и длительностями."
+      ? "Изменения сохранены в MusicXML. Партитура и воспроизведение обновлены."
       : "Изменения такта сохранены для воспроизведения, клавиатуры и повторного открытия.");
-  }, [editorDraft, fileName, score]);
-
-  const updateEditorChange = useCallback((eventId: string, update: (change: EditorChange) => EditorChange) => {
-    setEditorDraft((draft) => draft[eventId] ? { ...draft, [eventId]: update(draft[eventId]) } : draft);
-  }, []);
+  }, [editorMeasure, editorNotes, editorPartId, fileName, score]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1905,68 +1900,65 @@ export default function Home() {
               <div><span className="eyebrow">Ручное исправление</span><h2 id="editor-title">Редактор такта {editorMeasure}</h2></div>
               <button onClick={() => setEditorOpen(false)} aria-label="Закрыть редактор">×</button>
             </div>
-            <p className="editor-help">Перетаскивайте ноту вверх или вниз для изменения высоты. Потяните за её правый край, чтобы изменить длительность. Ноты одного аккорда редактируются по отдельности.</p>
+            <p className="editor-help">Это редактируемая строка партитуры. Потяните ноту по вертикали или горизонтали; щёлкните по пустому месту, чтобы добавить ноту. Выберите ноту для изменения её длительности или удаления.</p>
+            <div className="editor-toolbar">
+              <span>Длительность новой/выбранной ноты:</span>
+              {[0.25, 0.5, 1, 2, 4].map((duration) => (
+                <button key={duration} type="button" className={editorNotes.find((note) => note.id === selectedEditorNote)?.durationBeats === duration ? "active" : ""} onClick={() => setEditorNotes((notes) => notes.map((note) => note.id === selectedEditorNote ? { ...note, durationBeats: duration } : note))}>
+                  {{ 0.25: "16", 0.5: "⅛", 1: "¼", 2: "½", 4: "1" }[duration]}
+                </button>
+              ))}
+              <button type="button" className="editor-delete" disabled={!selectedEditorNote} onClick={() => { setEditorNotes((notes) => notes.filter((note) => note.id !== selectedEditorNote)); setSelectedEditorNote(""); }}>Удалить</button>
+            </div>
             <div
-              className="score-editor-roll"
+              className="score-editor-staff"
+              onPointerDown={(event) => {
+                if (!score || event.target !== event.currentTarget) return;
+                const rect = event.currentTarget.getBoundingClientRect();
+                const staff = event.clientY - rect.top < rect.height / 2 ? 1 : 2;
+                const relativeY = staff === 1 ? event.clientY - rect.top : event.clientY - rect.top - rect.height / 2;
+                const midi = Math.max(21, Math.min(108, Math.round((staff === 1 ? 72 : 48) + (rect.height / 4 - relativeY) / 8)));
+                const startBeat = Math.max(0, Math.min(score.beatsPerMeasure - 0.25, Math.round(((event.clientX - rect.left) / rect.width) * score.beatsPerMeasure * 4) / 4));
+                const note = { id: `new-${Date.now()}`, midi, startBeat, durationBeats: 1, staff, voice: "1" };
+                setEditorNotes((notes) => [...notes, note]);
+                setSelectedEditorNote(note.id);
+              }}
               onPointerMove={(event) => {
                 if (!editorDrag || !score) return;
-                if (editorDrag.kind === "pitch") {
-                  const steps = Math.round((editorDrag.startY - event.clientY) / 18);
-                  const midi = Math.max(0, Math.min(127, editorDrag.midi + steps));
-                  updateEditorChange(editorDrag.eventId, (change) => {
-                    if (change.midi[editorDrag.midiIndex] === midi) return change;
-                    const next = [...change.midi];
-                    next[editorDrag.midiIndex] = midi;
-                    return { ...change, midi: next };
-                  });
-                } else {
-                  const deltaBeats = ((event.clientX - editorDrag.startX) / editorDrag.rollWidth) * score.beatsPerMeasure;
-                  const durationBeats = Math.max(0.125, Math.min(score.beatsPerMeasure, Math.round((editorDrag.durationBeats + deltaBeats) * 4) / 4));
-                  updateEditorChange(editorDrag.eventId, (change) => change.durationBeats === durationBeats ? change : { ...change, durationBeats });
-                }
+                const steps = Math.round((editorDrag.startY - event.clientY) / 8);
+                const deltaBeats = Math.round((((event.clientX - editorDrag.startX) / editorDrag.rollWidth) * score.beatsPerMeasure) * 4) / 4;
+                setEditorNotes((notes) => notes.map((note) => note.id === editorDrag.noteId ? { ...note, midi: Math.max(21, Math.min(108, editorDrag.midi + steps)), startBeat: Math.max(0, Math.min(score.beatsPerMeasure - 0.25, editorDrag.startBeat + deltaBeats)) } : note));
               }}
               onPointerUp={() => setEditorDrag(null)}
               onPointerCancel={() => setEditorDrag(null)}
             >
-              {Array.from({ length: editorHigh - editorLow + 1 }, (_, index) => editorHigh - index).map((midi) => (
-                <div className={`editor-pitch-line ${midi % 12 === 0 ? "octave" : ""}`} key={midi}>
-                  {midi % 12 === 0 && <span>{nameForMidi(midi, true)}</span>}
-                </div>
-              ))}
+              <div className="editor-clef treble">𝄞</div><div className="editor-clef bass">𝄢</div>
+              {[0, 1].map((staff) => <div className={`editor-staff-lines staff-${staff + 1}`} key={staff}>{Array.from({ length: 5 }, (_, line) => <i key={line} />)}</div>)}
               {Array.from({ length: score.beatsPerMeasure + 1 }, (_, beat) => <i className="editor-beat-line" style={{ left: `${(beat / score.beatsPerMeasure) * 100}%` }} key={beat} />)}
-              {editorEvents.flatMap((event) => event.midi.map((midi, midiIndex) => {
-                const top = ((editorHigh - midi) / Math.max(1, editorHigh - editorLow + 1)) * 100;
-                const left = (((event.startBeat % score.beatsPerMeasure) / score.beatsPerMeasure) * 100);
-                const width = Math.max(3, (event.durationBeats / score.beatsPerMeasure) * 100);
+              {editorNotes.map((note) => {
+                const base = note.staff === 1 ? 68 : 44;
+                const top = note.staff === 1 ? 25 - (note.midi - base) * 1.6 : 75 - (note.midi - base) * 1.6;
+                const left = (note.startBeat / score.beatsPerMeasure) * 100;
                 return (
                   <button
                     type="button"
-                    className={`editor-note staff-${event.staff}`}
-                    key={`${event.id}-${midiIndex}`}
-                    style={{ top: `${top}%`, left: `${left}%`, width: `${width}%` }}
-                    title={`${nameForMidi(midi, true)} · перетащите для изменения высоты`}
+                    className={`editor-note staff-${note.staff} ${selectedEditorNote === note.id ? "selected" : ""}`}
+                    key={note.id}
+                    style={{ top: `${top}%`, left: `${left}%` }}
+                    title={`${nameForMidi(note.midi, true)} · ${notationForBeats(note.durationBeats)[1]}`}
                     onPointerDown={(pointerEvent) => {
-                      const roll = pointerEvent.currentTarget.closest<HTMLElement>(".score-editor-roll");
-                      if (!roll) return;
+                      const roll = pointerEvent.currentTarget.closest<HTMLElement>(".score-editor-staff");
+                      if (!roll || !score) return;
+                      pointerEvent.stopPropagation();
                       pointerEvent.currentTarget.setPointerCapture(pointerEvent.pointerId);
-                      setEditorDrag({ eventId: event.id, midiIndex, kind: "pitch", startX: pointerEvent.clientX, startY: pointerEvent.clientY, midi, durationBeats: event.durationBeats, rollWidth: roll.getBoundingClientRect().width });
+                      setSelectedEditorNote(note.id);
+                      setEditorDrag({ noteId: note.id, startX: pointerEvent.clientX, startY: pointerEvent.clientY, midi: note.midi, startBeat: note.startBeat, staff: note.staff, rollWidth: roll.getBoundingClientRect().width });
                     }}
                   >
-                    <span>{nameForMidi(midi, true)}</span>
-                    <i
-                      className="editor-resize"
-                      aria-label="Изменить длительность"
-                      onPointerDown={(pointerEvent) => {
-                        pointerEvent.stopPropagation();
-                        const roll = pointerEvent.currentTarget.closest<HTMLElement>(".score-editor-roll");
-                        if (!roll) return;
-                        pointerEvent.currentTarget.setPointerCapture(pointerEvent.pointerId);
-                        setEditorDrag({ eventId: event.id, midiIndex, kind: "duration", startX: pointerEvent.clientX, startY: pointerEvent.clientY, midi, durationBeats: event.durationBeats, rollWidth: roll.getBoundingClientRect().width });
-                      }}
-                    />
+                    <span>●</span>
                   </button>
                 );
-              }))}
+              })}
             </div>
             <div className="editor-actions">
               <button className="ghost-button" onClick={() => setEditorOpen(false)}>Отменить</button>
