@@ -109,8 +109,15 @@ function PianoKeyboard({
       </div>
       <div className="piano-keyboard" style={{ "--white-key-count": whiteKeys.length } as React.CSSProperties}>
         {whiteKeys.map((midi) => (
-          <button type="button" onClick={() => onKeyPress?.(midi)} className={`piano-key white ${active.get(midi) || ""} ${pressed.has(midi) ? "pressed" : ""}`} key={midi}>
-            <b>{nameForMidi(midi, false)}</b>
+          <button
+            type="button"
+            onClick={() => onKeyPress?.(midi)}
+            className={`piano-key white ${active.get(midi) || ""} ${pressed.has(midi) ? "pressed" : ""}`}
+            key={midi}
+            title={`${nameForMidi(midi, true)} (${nameForMidi(midi, false)})`}
+            aria-label={`${nameForMidi(midi, true)}, ${nameForMidi(midi, false)}`}
+          >
+            <b>{nameForMidi(midi, true)}</b>
           </button>
         ))}
         {allKeys.filter(isBlackPianoKey).map((midi) => {
