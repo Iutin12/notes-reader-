@@ -19,7 +19,7 @@
     "desktop:build:win": "pnpm build && electron-builder --win nsis --x64 --publish never",
     "desktop:build:all": "pnpm build && electron-builder --mac dmg --win nsis --x64 --publish never",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern release",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
@@ -71,12 +71,20 @@
         "to": "server",
         "filter": [
           "!node_modules{,/**/*}",
+          "!dist{,/**/*}",
           "!.next{,/**/*}",
           "!release{,/**/*}",
           "!.git{,/**/*}",
           "!desktop{,/**/*}",
           "!omr-data{,/**/*}",
           "!*.log"
+        ]
+      },
+      {
+        "from": "dist",
+        "to": "server/dist",
+        "filter": [
+          "**/*"
         ]
       },
       {
