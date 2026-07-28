@@ -18,7 +18,7 @@ from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 import uvicorn
 
 DATA_DIR = Path(os.environ.get("OMR_DATA_DIR", "/tmp/notera-omr-jobs")).resolve()
@@ -325,29 +325,54 @@ def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
         job_id,
         status="processing",
         stage="recognizing",
-        progress=15,
+        progress=10,
         message="Audiveris распознаёт партитуру локально…",
     )
     try:
-        run_checked(
-            [
-                AUDIVERIS_BIN,
-                "-batch",
-                "-transcribe",
-                "-export",
-                "-output",
-                str(output_dir),
-                "--",
-                str(source),
-            ],
-            timeout=OMR_TIMEOUT_SECONDS,
-            log_file=directory / "audiveris.log",
-        )
-        mxl_files = sorted(output_dir.rglob("*.mxl"))
-        if not mxl_files:
-            raise RuntimeError("Audiveris не создал файл MusicXML.")
+        # Process individual PDF pages. Audiveris does not expose a dependable
+        # in-page percentage, but this gives the interface factual milestones:
+        # a percentage advances only after a complete page has been exported.
+        reader = PdfReader(str(source), strict=False)
+        page_xml: list[Path] = []
+        logs: list[str] = []
+        for index, pdf_page in enumerate(reader.pages, start=1):
+            if read_job(job_id)["status"] == "cancelled":
+                return
+            write_job(
+                job_id,
+                progress=10 + round((index - 1) / page_count * 78),
+                message=f"Audiveris распознаёт страницу {index} из {page_count}…",
+            )
+            page_pdf = directory / f"source-page-{index:03d}.pdf"
+            writer = PdfWriter()
+            writer.add_page(pdf_page)
+            with page_pdf.open("wb") as page_file:
+                writer.write(page_file)
+            page_output = output_dir / f"page-{index:03d}"
+            page_output.mkdir(exist_ok=True)
+            logs.append(run_checked(
+                [
+                    AUDIVERIS_BIN,
+                    "-batch",
+                    "-transcribe",
+                    "-export",
+                    "-output",
+                    str(page_output),
+                    "--",
+                    str(page_pdf),
+                ],
+                timeout=OMR_TIMEOUT_SECONDS,
+            ))
+            mxl_files = sorted(page_output.rglob("*.mxl"))
+            if not mxl_files:
+                raise RuntimeError(f"Audiveris не создал MusicXML для страницы {index}.")
+            extracted = page_output / "page.musicxml"
+            extract_musicxml(mxl_files[0], extracted)
+            page_xml.append(extracted)
+            write_job(job_id, progress=10 + round(index / page_count * 78))
+        (directory / "audiveris.log").write_text("\n\n".join(logs)[-500_000:], encoding="utf-8")
         write_job(job_id, stage="building", progress=88, message="Создаём партитуру MusicXML…")
-        extract_musicxml(mxl_files[0], directory / "result.musicxml")
+        merge_page_musicxml(page_xml, directory / "result.musicxml")
         write_job(
             job_id,
             status="ready",
@@ -368,6 +393,9 @@ def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
                 f"audiveris.log: {exc}"
             ),
         )
+    finally:
+        for page_pdf in directory.glob("source-page-*.pdf"):
+            page_pdf.unlink(missing_ok=True)
 
 
 def process_pdf(job_id: str) -> None:

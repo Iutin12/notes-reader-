@@ -838,24 +838,31 @@ export default function Home() {
         }),
       );
       highlightedNotesRef.current = currentNotes;
-      const positions = scoreClickPositionsRef.current;
-      const position = positions.reduce(
-        (nearest, candidate) =>
-          Math.abs(candidate.beat - targetBeat) <
-          Math.abs(nearest.beat - targetBeat)
-            ? candidate
-            : nearest,
-        positions[0],
-      );
       const highlight =
         scoreRef.current?.querySelector<HTMLElement>(".playback-highlight");
-      if (highlight && position) {
-        const width = Math.max(22, Math.min(52, position.height * 0.15));
+      const scoreBounds = scoreRef.current?.getBoundingClientRect();
+      const noteBounds = currentNotes
+        .map((note) => {
+          const element = (note as unknown as { getSVGGElement?: () => SVGElement })
+            .getSVGGElement?.();
+          return element?.getBoundingClientRect();
+        })
+        .filter((rect): rect is DOMRect => Boolean(rect && rect.width > 0 && rect.height > 0));
+      if (highlight && scoreBounds && noteBounds.length) {
+        // The OSMD cursor can span a whole staff and its cached coordinates can
+        // differ after SVG reflow. Highlight the rendered noteheads instead.
+        const left = Math.min(...noteBounds.map((rect) => rect.left));
+        const right = Math.max(...noteBounds.map((rect) => rect.right));
+        const top = Math.min(...noteBounds.map((rect) => rect.top));
+        const bottom = Math.max(...noteBounds.map((rect) => rect.bottom));
+        const padding = 7;
         highlight.hidden = false;
-        highlight.style.left = `${position.x - width / 2}px`;
-        highlight.style.top = `${position.y - position.height / 2}px`;
-        highlight.style.width = `${width}px`;
-        highlight.style.height = `${position.height}px`;
+        highlight.style.left = `${left - scoreBounds.left - padding}px`;
+        highlight.style.top = `${top - scoreBounds.top - padding}px`;
+        highlight.style.width = `${right - left + padding * 2}px`;
+        highlight.style.height = `${bottom - top + padding * 2}px`;
+      } else if (highlight) {
+        highlight.hidden = true;
       }
     } catch {}
   }, [score]);
