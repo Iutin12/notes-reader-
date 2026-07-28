@@ -855,14 +855,21 @@ export default function Home() {
         const top = Math.min(...noteBounds.map((rect) => rect.top));
         const bottom = Math.max(...noteBounds.map((rect) => rect.bottom));
         const center = (left + Math.max(...noteBounds.map((rect) => rect.right))) / 2;
+        const osmdCursorBounds = cursor.cursorElement?.getBoundingClientRect();
+        const systemTop = osmdCursorBounds && osmdCursorBounds.height > 0
+          ? osmdCursorBounds.top
+          : top - 38;
+        const systemBottom = osmdCursorBounds && osmdCursorBounds.height > 0
+          ? osmdCursorBounds.bottom
+          : bottom + 38;
         const width = 16;
         highlight.hidden = false;
-        // The visual cursor stays full-page-height so it moves smoothly along
-        // the score instead of jumping up and down with every staff.
+        // Use the current OSMD system bounds. The cursor stays inside the
+        // active line (grand staff for piano), rather than spanning the page.
         highlight.style.left = `${center - scoreBounds.left - width / 2}px`;
-        highlight.style.top = "0px";
+        highlight.style.top = `${systemTop - scoreBounds.top}px`;
         highlight.style.width = `${width}px`;
-        highlight.style.height = `${scoreBounds.height}px`;
+        highlight.style.height = `${systemBottom - systemTop}px`;
         // Keep the actual note position separately for auto-scroll.
         highlight.dataset.scrollY = String(top - scoreBounds.top + (bottom - top) / 2);
       } else if (highlight) {
@@ -1021,14 +1028,19 @@ export default function Home() {
                 if (!scoreElement || !score) return;
                 const cursorMarker = scoreElement.querySelector<HTMLElement>(".playback-highlight");
                 const noteY = Number(cursorMarker?.dataset.scrollY);
+                const scrollArea = scoreElement.closest<HTMLElement>(".score-area");
+                if (!scrollArea || !Number.isFinite(noteY)) return;
                 const scoreRect = scoreElement.getBoundingClientRect();
-                // The visual cursor spans the page; its top cannot describe the
-                // current note. Follow the note coordinate saved by advanceCursor.
-                const target = Number.isFinite(noteY)
-                  ? window.scrollY + scoreRect.top + noteY - window.innerHeight * 0.42
-                  : window.scrollY;
-                if (Number.isFinite(noteY) && Math.abs(window.scrollY - target) > 28) {
-                  window.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+                const areaRect = scrollArea.getBoundingClientRect();
+                const noteViewportY = scoreRect.top - areaRect.top + noteY;
+                const upperBound = scrollArea.clientHeight * 0.28;
+                const lowerBound = scrollArea.clientHeight * 0.64;
+                // .score-area is the element that scrolls, not the browser
+                // window. Move only when the current note leaves its reading
+                // zone, which prevents continuous jitter.
+                if (noteViewportY < upperBound || noteViewportY > lowerBound) {
+                  const target = scrollArea.scrollTop + noteViewportY - scrollArea.clientHeight * 0.44;
+                  scrollArea.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
                 }
               });
             }
