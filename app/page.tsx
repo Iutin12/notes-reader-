@@ -75,6 +75,48 @@ type ScoreClickPosition = {
   height: number;
 };
 
+const PIANO_LOW_MIDI = 36; // C2
+const PIANO_HIGH_MIDI = 96; // C7
+const blackPitchClasses = new Set([1, 3, 6, 8, 10]);
+
+function isBlackPianoKey(midi: number) {
+  return blackPitchClasses.has(((midi % 12) + 12) % 12);
+}
+
+function PianoKeyboard({ notes }: { notes: number[] }) {
+  const allKeys = Array.from(
+    { length: PIANO_HIGH_MIDI - PIANO_LOW_MIDI + 1 },
+    (_, index) => PIANO_LOW_MIDI + index,
+  );
+  const whiteKeys = allKeys.filter((midi) => !isBlackPianoKey(midi));
+  const active = new Set(notes);
+  return (
+    <div className="keyboard-guide" aria-label="Клавиатура фортепиано">
+      <div className="keyboard-guide-heading">
+        <span>Клавиши аккорда</span>
+        <small>{notes.length ? notes.map((midi) => nameForMidi(midi, false)).join(" · ") : "Нажмите на ноту в партитуре"}</small>
+      </div>
+      <div className="piano-keyboard" style={{ "--white-key-count": whiteKeys.length } as React.CSSProperties}>
+        {whiteKeys.map((midi) => (
+          <i className={`piano-key white ${active.has(midi) ? "active" : ""}`} key={midi}>
+            {midi % 12 === 0 && <b>C{Math.floor(midi / 12) - 1}</b>}
+          </i>
+        ))}
+        {allKeys.filter(isBlackPianoKey).map((midi) => {
+          const whitesBefore = whiteKeys.filter((white) => white < midi).length;
+          return (
+            <i
+              className={`piano-key black ${active.has(midi) ? "active" : ""}`}
+              key={midi}
+              style={{ left: `${(whitesBefore / whiteKeys.length) * 100}%` }}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const MAX_FILE_SIZE = 25 * 1024 * 1024;
 const PDF_MAX_FILE_SIZE = 50 * 1024 * 1024;
 const OMR_STAGES: Array<{ stage: OmrStage; label: string }> = [
@@ -331,6 +373,7 @@ export default function Home() {
   // Manual reading should not fight the player. Users can enable following
   // playback explicitly in settings when they want the score to scroll.
   const [autoScroll, setAutoScroll] = useState(false);
+  const [keyboardGuide, setKeyboardGuide] = useState(false);
   const [countIn, setCountIn] = useState(0);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [omrJob, setOmrJob] = useState<OmrJob | null>(null);
@@ -381,6 +424,14 @@ export default function Home() {
 
   const totalDuration = score ? scoreDuration(score, speed) : 0;
   const active = visibleEvents[currentEvent] || null;
+  const activeChordMidi = useMemo(() => {
+    if (!active) return [];
+    return [...new Set(
+      visibleEvents
+        .filter((event) => Math.abs(event.startBeat - active.startBeat) < 0.0001)
+        .flatMap((event) => event.midi.map((midi) => midi + transpose)),
+    )].sort((a, b) => a - b);
+  }, [active, transpose, visibleEvents]);
   const currentMeasure = active?.measure || 1;
 
   const clearTimers = useCallback(() => {
@@ -1146,6 +1197,7 @@ export default function Home() {
       else if (event.key.toLowerCase() === "r") setRepeat((value) => !value);
       else if (event.key.toLowerCase() === "m") setMetronome((value) => !value);
       else if (event.code === "KeyA") setAutoScroll((value) => !value);
+      else if (event.code === "KeyK") setKeyboardGuide((value) => !value);
       else if (event.key === "Escape") setSettingsOpen(false);
     };
     window.addEventListener("keydown", onKey);
@@ -1492,7 +1544,7 @@ export default function Home() {
             <span>Быстрые клавиши</span>
             <p><kbd>Пробел</kbd> играть / пауза</p>
             <p><kbd>←</kbd><kbd>→</kbd> шаг назад / вперёд</p>
-            <p><kbd>R</kbd> повтор · <kbd>M</kbd> метроном · <kbd>A</kbd> автопрокрутка</p>
+            <p><kbd>R</kbd> повтор · <kbd>M</kbd> метроном · <kbd>A</kbd> автопрокрутка · <kbd>K</kbd> клавиатура</p>
           </div>
         </aside>
 
@@ -1605,6 +1657,7 @@ export default function Home() {
           <button className={`toggle-button ${metronome ? "on" : ""}`} onClick={() => setMetronome(!metronome)}><span>♩</span> Метроном</button>
           <button className={`toggle-button ${repeat ? "on" : ""}`} onClick={() => setRepeat(!repeat)}><span>↻</span> Повтор</button>
         </div>
+        {keyboardGuide && <PianoKeyboard notes={activeChordMidi} />}
       </section>
 
       {settingsOpen && (
@@ -1619,6 +1672,7 @@ export default function Home() {
             </div>
             <div className="settings-toggles">
               <label><input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} /><span><b>Автоматическая прокрутка <kbd>A</kbd></b><small>Удерживать текущую позицию в поле зрения</small></span></label>
+              <label><input type="checkbox" checked={keyboardGuide} onChange={(e) => setKeyboardGuide(e.target.checked)} /><span><b>Клавиатура фортепиано <kbd>K</kbd></b><small>Показывать клавиши всех нот текущего аккорда</small></span></label>
               <label><input type="checkbox" checked={showNames} onChange={(e) => setShowNames(e.target.checked)} /><span><b>Показывать названия нот</b><small>Отображать звучащий аккорд под партитурой</small></span></label>
               <label><input type="checkbox" checked={solfege} onChange={(e) => setSolfege(e.target.checked)} /><span><b>Названия до–ре–ми</b><small>Выключите для обозначений C–D–E</small></span></label>
               <label><input type="checkbox" checked={theme === "dark"} onChange={(e) => { const value = e.target.checked ? "dark" : "light"; setTheme(value); localStorage.setItem("notera-theme", value); }} /><span><b>Тёмная тема</b><small>Снизить яркость интерфейса</small></span></label>
