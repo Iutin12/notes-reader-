@@ -87,6 +87,87 @@ function isBlackPianoKey(midi: number) {
   return blackPitchClasses.has(((midi % 12) + 12) % 12);
 }
 
+function musicXmlPitch(midi: number) {
+  const names = ["C", "C", "D", "D", "E", "F", "F", "G", "G", "A", "A", "B"];
+  const alters = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0];
+  const safeMidi = Math.max(0, Math.min(127, midi));
+  const pitchClass = safeMidi % 12;
+  return { step: names[pitchClass], alter: alters[pitchClass], octave: Math.floor(safeMidi / 12) - 1 };
+}
+
+function notationForBeats(beats: number) {
+  const options = [
+    [0.125, "32nd", 0], [0.25, "16th", 0], [0.375, "16th", 1],
+    [0.5, "eighth", 0], [0.75, "eighth", 1], [1, "quarter", 0],
+    [1.5, "quarter", 1], [2, "half", 0], [3, "half", 1],
+    [4, "whole", 0], [6, "whole", 1], [8, "breve", 0],
+  ] as const;
+  return options.reduce((best, option) =>
+    Math.abs(option[0] - beats) < Math.abs(best[0] - beats) ? option : best,
+  );
+}
+
+function applyEditsToMusicXml(xml: string, edits: Record<string, EditorChange>) {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  if (doc.querySelector("parsererror")) return xml;
+  for (const [eventId, change] of Object.entries(edits)) {
+    const match = eventId.match(/^(.*)-m(\d+)-n(\d+)$/);
+    if (!match) continue;
+    const [, partId, measureNumber, noteIndexText] = match;
+    const part = [...doc.querySelectorAll("score-partwise > part")]
+      .find((node) => node.getAttribute("id") === partId);
+    if (!part) continue;
+    const measure = [...part.querySelectorAll(":scope > measure")]
+      .find((node, index) => (node.getAttribute("number") || String(index + 1)) === measureNumber);
+    if (!measure) continue;
+    const notes = [...measure.children].filter((node) => node.localName === "note");
+    const first = notes[Number(noteIndexText)];
+    if (!first) continue;
+    const chordNotes = [first];
+    for (let index = Number(noteIndexText) + 1; index < notes.length; index += 1) {
+      if (!notes[index].querySelector(":scope > chord")) break;
+      chordNotes.push(notes[index]);
+    }
+    let divisions = 1;
+    for (const previousMeasure of part.querySelectorAll(":scope > measure")) {
+      const found = Number(previousMeasure.querySelector(":scope > attributes > divisions")?.textContent || "0");
+      if (found) divisions = found;
+      if (previousMeasure === measure) break;
+    }
+    const [, type, dots] = notationForBeats(change.durationBeats);
+    chordNotes.forEach((note, index) => {
+      const pitch = musicXmlPitch(change.midi[index] ?? change.midi[change.midi.length - 1]);
+      const pitchNode = note.querySelector(":scope > pitch");
+      if (!pitchNode) return;
+      const set = (selector: string, value: string) => {
+        let node = pitchNode?.querySelector(`:scope > ${selector}`);
+        if (!node) {
+          node = doc.createElement(selector);
+          pitchNode?.appendChild(node);
+        }
+        node.textContent = value;
+      };
+      set("step", pitch.step);
+      set("alter", String(pitch.alter));
+      set("octave", String(pitch.octave));
+      const duration = note.querySelector(":scope > duration");
+      if (duration) duration.textContent = String(Math.max(1, Math.round(change.durationBeats * divisions)));
+      let typeNode = note.querySelector(":scope > type");
+      if (!typeNode) {
+        typeNode = doc.createElement("type");
+        note.appendChild(typeNode);
+      }
+      typeNode.textContent = type;
+      note.querySelectorAll(":scope > dot").forEach((dot) => dot.remove());
+      for (let dotIndex = 0; dotIndex < dots; dotIndex += 1) {
+        const dot = doc.createElement("dot");
+        typeNode.insertAdjacentElement("afterend", dot);
+      }
+    });
+  }
+  return new XMLSerializer().serializeToString(doc);
+}
+
 function PianoKeyboard({
   keys,
   pressedNotes = [],
@@ -1277,8 +1358,12 @@ export default function Home() {
 
   const saveScoreEditor = useCallback(() => {
     if (!score) return;
+    const updatedXml = score.sourceXml
+      ? applyEditsToMusicXml(score.sourceXml, editorDraft)
+      : undefined;
     setScore((current) => current ? {
       ...current,
+      sourceXml: updatedXml || current.sourceXml,
       events: current.events.map((event) => editorDraft[event.id]
         ? {
             ...event,
@@ -1294,6 +1379,7 @@ export default function Home() {
       const edits = (item.edits || []).filter((edit) => !changedIds.has(edit.id));
       return {
         ...item,
+        xml: updatedXml || item.xml,
         edits: [...edits, ...Object.entries(editorDraft).map(([id, change]) => ({
           id,
           midi: change.midi,
@@ -1304,7 +1390,9 @@ export default function Home() {
     localStorage.setItem("notera-scores", JSON.stringify(nextSaved));
     setSaved(nextSaved);
     setEditorOpen(false);
-    setNotice("Изменения такта сохранены для воспроизведения, клавиатуры и повторного открытия.");
+    setNotice(updatedXml
+      ? "Изменения сохранены. Партитура перерисована с новыми нотами и длительностями."
+      : "Изменения такта сохранены для воспроизведения, клавиатуры и повторного открытия.");
   }, [editorDraft, fileName, score]);
 
   const updateEditorChange = useCallback((eventId: string, update: (change: EditorChange) => EditorChange) => {
