@@ -15,8 +15,8 @@ import {
   scoreDuration,
 } from "../lib/music";
 
-type Mode = "continuous" | "event" | "measure" | "fragment";
-type SavedScore = { name: string; fileName: string; xml: string; bpm?: number; savedAt: number };
+type Mode = "continuous" | "event" | "measure" | "fragment" | "training";
+type SavedScore = { name: string; fileName: string; xml: string; bpm?: number; savedAt: number; edits?: Array<{ id: string; midi: number[] }> };
 type OmrStage =
   | "uploading"
   | "queued"
@@ -85,13 +85,22 @@ function isBlackPianoKey(midi: number) {
   return blackPitchClasses.has(((midi % 12) + 12) % 12);
 }
 
-function PianoKeyboard({ keys }: { keys: PianoKeyState[] }) {
+function PianoKeyboard({
+  keys,
+  pressedNotes = [],
+  onKeyPress,
+}: {
+  keys: PianoKeyState[];
+  pressedNotes?: number[];
+  onKeyPress?: (midi: number) => void;
+}) {
   const allKeys = Array.from(
     { length: PIANO_HIGH_MIDI - PIANO_LOW_MIDI + 1 },
     (_, index) => PIANO_LOW_MIDI + index,
   );
   const whiteKeys = allKeys.filter((midi) => !isBlackPianoKey(midi));
   const active = new Map(keys.map((key) => [key.midi, key.hand]));
+  const pressed = new Set(pressedNotes);
   return (
     <div className="keyboard-guide" aria-label="Клавиатура фортепиано">
       <div className="keyboard-guide-heading">
@@ -100,15 +109,17 @@ function PianoKeyboard({ keys }: { keys: PianoKeyState[] }) {
       </div>
       <div className="piano-keyboard" style={{ "--white-key-count": whiteKeys.length } as React.CSSProperties}>
         {whiteKeys.map((midi) => (
-          <i className={`piano-key white ${active.get(midi) || ""}`} key={midi}>
-            {midi % 12 === 0 && <b>C{Math.floor(midi / 12) - 1}</b>}
-          </i>
+          <button type="button" onClick={() => onKeyPress?.(midi)} className={`piano-key white ${active.get(midi) || ""} ${pressed.has(midi) ? "pressed" : ""}`} key={midi}>
+            <b>{nameForMidi(midi, false)}</b>
+          </button>
         ))}
         {allKeys.filter(isBlackPianoKey).map((midi) => {
           const whitesBefore = whiteKeys.filter((white) => white < midi).length;
           return (
-            <i
-              className={`piano-key black ${active.get(midi) || ""}`}
+            <button
+              type="button"
+              onClick={() => onKeyPress?.(midi)}
+              className={`piano-key black ${active.get(midi) || ""} ${pressed.has(midi) ? "pressed" : ""}`}
               key={midi}
               style={{ left: `${(whitesBefore / whiteKeys.length) * 100}%` }}
             />
@@ -376,6 +387,9 @@ export default function Home() {
   // playback explicitly in settings when they want the score to scroll.
   const [autoScroll, setAutoScroll] = useState(false);
   const [keyboardGuide, setKeyboardGuide] = useState(false);
+  const [trainingAttempt, setTrainingAttempt] = useState({ eventId: "", pressed: [] as number[], feedback: "" });
+  const [correctionMode, setCorrectionMode] = useState(false);
+  const [correctionEdit, setCorrectionEdit] = useState({ eventId: "", input: "" });
   const [countIn, setCountIn] = useState(0);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [omrJob, setOmrJob] = useState<OmrJob | null>(null);
@@ -449,6 +463,12 @@ export default function Home() {
       }))
       .sort((a, b) => a.midi - b.midi);
   }, [active, transpose, visibleEvents]);
+  const trainingMode = mode === "training";
+  const trainingPressed = trainingAttempt.eventId === active?.id ? trainingAttempt.pressed : [];
+  const trainingFeedback = trainingAttempt.eventId === active?.id ? trainingAttempt.feedback : "";
+  const correctionInput = correctionEdit.eventId === active?.id
+    ? correctionEdit.input
+    : active?.midi.join(", ") || "";
   const currentMeasure = active?.measure || 1;
 
   const clearTimers = useCallback(() => {
@@ -1160,12 +1180,17 @@ export default function Home() {
   }, [scheduleFrom]);
 
   const togglePlay = useCallback(() => {
+    if (trainingMode) {
+      setKeyboardGuide(true);
+      setTrainingAttempt({ eventId: active?.id || "", pressed: [], feedback: "В режиме обучения нажимайте клавиши текущего аккорда." });
+      return;
+    }
     if (playing) {
       stop(false);
     } else {
       void scheduleFrom(currentEvent);
     }
-  }, [currentEvent, playing, scheduleFrom, stop]);
+  }, [active?.id, currentEvent, playing, scheduleFrom, stop, trainingMode]);
 
   const moveEvent = useCallback(
     (delta: number) => {
@@ -1202,6 +1227,64 @@ export default function Home() {
     ],
   );
 
+  const handleTrainingKey = useCallback((midi: number) => {
+    if (!trainingMode || !activeChordKeys.length) return;
+    const expected = activeChordKeys.map((key) => key.midi);
+    const currentAttempt = trainingAttempt.eventId === active?.id
+      ? trainingAttempt
+      : { eventId: active?.id || "", pressed: [], feedback: "" };
+    if (!expected.includes(midi)) {
+      setTrainingAttempt({ ...currentAttempt, feedback: "Этой клавиши нет в текущем аккорде. Попробуйте ещё раз." });
+      return;
+    }
+    const next = [...new Set([...currentAttempt.pressed, midi])];
+    if (expected.every((note) => next.includes(note))) {
+      setTrainingAttempt({ eventId: active?.id || "", pressed: next, feedback: "Верно! Следующий аккорд…" });
+      window.setTimeout(() => moveEvent(1), 260);
+    } else {
+      setTrainingAttempt({ eventId: active?.id || "", pressed: next, feedback: "Верно. Добавьте остальные клавиши аккорда." });
+    }
+  }, [active?.id, activeChordKeys, moveEvent, trainingAttempt, trainingMode]);
+
+  const applyCorrection = useCallback(() => {
+    if (!score || !active) return;
+    const midi = correctionInput
+      .split(/[\s,;]+/)
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value >= 0 && value <= 127);
+    const uniqueMidi = [...new Set(midi)];
+    if (!uniqueMidi.length) {
+      setNotice("Введите хотя бы одну MIDI-ноту: например, 60, 64, 67.");
+      return;
+    }
+    setScore((current) => current ? {
+      ...current,
+      events: current.events.map((event) => event.id === active.id
+        ? { ...event, midi: uniqueMidi, names: uniqueMidi.map((note) => nameForMidi(note, false)) }
+        : event),
+    } : current);
+    const nextSaved = loadSaved().map((item) => {
+      if (item.fileName !== fileName) return item;
+      const edits = (item.edits || []).filter((edit) => edit.id !== active.id);
+      return { ...item, edits: [...edits, { id: active.id, midi: uniqueMidi }] };
+    });
+    localStorage.setItem("notera-scores", JSON.stringify(nextSaved));
+    setSaved(nextSaved);
+    setNotice("Ноты текущего голоса исправлены для воспроизведения, клавиатуры и сохранённой версии.");
+  }, [active, correctionInput, fileName, score]);
+
+  const toggleCorrectionKey = useCallback((midi: number) => {
+    if (!correctionMode || !active) return;
+    const current = correctionInput
+      .split(/[\s,;]+/)
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value >= 0 && value <= 127);
+    const next = current.includes(midi)
+      ? current.filter((value) => value !== midi)
+      : [...current, midi].sort((a, b) => a - b);
+    setCorrectionEdit({ eventId: active.id, input: next.join(", ") });
+  }, [active, correctionInput, correctionMode]);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
@@ -1215,11 +1298,16 @@ export default function Home() {
       else if (event.key.toLowerCase() === "m") setMetronome((value) => !value);
       else if (event.code === "KeyA") setAutoScroll((value) => !value);
       else if (event.code === "KeyK") setKeyboardGuide((value) => !value);
+      else if (event.code === "KeyT") {
+        stop(false);
+        setMode((value) => value === "training" ? "continuous" : "training");
+        setKeyboardGuide(true);
+      }
       else if (event.key === "Escape") setSettingsOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [moveEvent, togglePlay]);
+  }, [moveEvent, stop, togglePlay]);
 
   useEffect(() => {
     if (!playing) return;
@@ -1280,9 +1368,9 @@ export default function Home() {
         visibleEvents[index].startBeat,
         visibleEvents[index].measure,
       );
-      void scheduleFrom(index);
+      if (playing) void scheduleFrom(index);
     },
-    [advanceCursor, scheduleFrom, score, speed, stop, visibleEvents],
+    [advanceCursor, playing, scheduleFrom, score, speed, stop, visibleEvents],
   );
 
   const onDrop = (event: DragEvent) => {
@@ -1480,6 +1568,12 @@ export default function Home() {
                   <button className="recent-open" onClick={() => {
                     const data = parseMusicXml(item.xml);
                     if (item.bpm) data.bpm = item.bpm;
+                    if (item.edits?.length) {
+                      const edits = new Map(item.edits.map((edit) => [edit.id, edit.midi]));
+                      data.events = data.events.map((event) => edits.has(event.id)
+                        ? { ...event, midi: edits.get(event.id)!, names: edits.get(event.id)!.map((midi) => nameForMidi(midi, false)) }
+                        : event);
+                    }
                     openScore(data, item.fileName);
                   }}>
                     <span className="sheet-thumb">𝄞</span>
@@ -1526,8 +1620,9 @@ export default function Home() {
             ["event", "♪", "По одной ноте"],
             ["measure", "▥", "По тактам"],
             ["fragment", "↔", "Фрагмент"],
+            ["training", "⌨", "Режим обучения"],
           ] as const).map(([value, icon, label]) => (
-            <button key={value} className={mode === value ? "active" : ""} onClick={() => { stop(false); setMode(value); }}>
+            <button key={value} className={mode === value ? "active" : ""} onClick={() => { stop(false); setMode(value); if (value === "training") setKeyboardGuide(true); }}>
               <span>{icon}</span>{label}
             </button>
           ))}
@@ -1561,7 +1656,7 @@ export default function Home() {
             <span>Быстрые клавиши</span>
             <p><kbd>Пробел</kbd> играть / пауза</p>
             <p><kbd>←</kbd><kbd>→</kbd> шаг назад / вперёд</p>
-            <p><kbd>R</kbd> повтор · <kbd>M</kbd> метроном · <kbd>A</kbd> автопрокрутка · <kbd>K</kbd> клавиатура</p>
+            <p><kbd>R</kbd> повтор · <kbd>M</kbd> метроном · <kbd>A</kbd> автопрокрутка · <kbd>K</kbd> клавиатура · <kbd>T</kbd> обучение</p>
           </div>
         </aside>
 
@@ -1622,13 +1717,13 @@ export default function Home() {
         </div>
       </section>
 
-      <section className={`transport ${keyboardGuide ? "with-keyboard" : ""}`} aria-label="Управление воспроизведением">
+      <section className={`transport ${(keyboardGuide || trainingMode || correctionMode) ? "with-keyboard" : ""}`} aria-label="Управление воспроизведением">
         <div className="transport-main">
           <button className="control-button" onClick={() => moveEvent(-1)} aria-label="Предыдущее событие"><Icon>‹</Icon></button>
           <button className="play-button" onClick={togglePlay} aria-label={playing ? "Пауза" : "Воспроизвести"}>{playing ? "Ⅱ" : "▶"}</button>
           <button className="control-button" onClick={() => stop()} aria-label="Остановить">■</button>
           <button className="control-button" onClick={() => moveEvent(1)} aria-label="Следующее событие"><Icon>›</Icon></button>
-          {mode === "event" && <button className="next-event-button" onClick={() => moveEvent(1)}>Следующая нота</button>}
+          {(mode === "event" || trainingMode) && <button className="next-event-button" onClick={() => moveEvent(1)}>Следующая нота</button>}
         </div>
         <div className="timeline">
           <span>{formatTime(position)}</span>
@@ -1673,8 +1768,25 @@ export default function Home() {
           <label className="volume-control"><span>Громкость</span><input type="range" min={0} max={1} step={0.01} value={volume} onChange={(event) => { const value = Number(event.target.value); setVolume(value); synthRef.current.setVolume(value); }} /></label>
           <button className={`toggle-button ${metronome ? "on" : ""}`} onClick={() => setMetronome(!metronome)}><span>♩</span> Метроном</button>
           <button className={`toggle-button ${repeat ? "on" : ""}`} onClick={() => setRepeat(!repeat)}><span>↻</span> Повтор</button>
+          <button className={`toggle-button ${correctionMode ? "on" : ""}`} onClick={() => {
+            if (!correctionMode) setCorrectionEdit({ eventId: active?.id || "", input: active?.midi.join(", ") || "" });
+            setCorrectionMode((value) => !value);
+          }}>✎ Исправить</button>
         </div>
-        {keyboardGuide && <PianoKeyboard keys={activeChordKeys} />}
+        {correctionMode && active && (
+          <div className="correction-panel">
+            <b>Исправление текущего голоса</b>
+            <span>Введите MIDI-номера нот: 60 = C4, или отметьте клавиши ниже. Изменение влияет на звук, клавиатуру и сохранённую партитуру.</span>
+            <input value={correctionInput} onChange={(event) => setCorrectionEdit({ eventId: active?.id || "", input: event.target.value })} aria-label="MIDI-ноты текущего аккорда" placeholder="60, 64, 67" />
+            <button className="toggle-button" onClick={applyCorrection}>Применить</button>
+          </div>
+        )}
+        {(keyboardGuide || trainingMode || correctionMode) && (
+          <div className="keyboard-guide-wrap">
+            {trainingMode && <p className="training-status">{trainingFeedback || "Нажмите все клавиши показанного аккорда."}</p>}
+            <PianoKeyboard keys={activeChordKeys} pressedNotes={trainingMode ? trainingPressed : correctionMode ? correctionInput.split(/[\s,;]+/).map(Number) : []} onKeyPress={trainingMode ? handleTrainingKey : correctionMode ? toggleCorrectionKey : undefined} />
+          </div>
+        )}
       </section>
 
       {settingsOpen && (
