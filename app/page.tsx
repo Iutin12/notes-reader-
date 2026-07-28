@@ -87,6 +87,18 @@ const OMR_STAGES: Array<{ stage: OmrStage; label: string }> = [
 const wait = (milliseconds: number) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
+declare global {
+  interface Window {
+    noteraDesktop?: { omrBaseUrl?: string };
+  }
+}
+
+function omrRequestUrl(input: RequestInfo | URL): RequestInfo | URL {
+  if (typeof input !== "string" || !input.startsWith("/api/omr/")) return input;
+  const baseUrl = window.noteraDesktop?.omrBaseUrl;
+  return baseUrl ? `${baseUrl}${input}` : input;
+}
+
 async function fetchWithRetry(
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -95,7 +107,7 @@ async function fetchWithRetry(
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const response = await fetch(input, init);
+      const response = await fetch(omrRequestUrl(input), init);
       if (
         response.status < 500 ||
         attempt === attempts - 1
@@ -654,7 +666,7 @@ export default function Home() {
             message.includes("Failed to fetch")
               ? "Сервис распознавания перезапускается или временно недоступен. Подождите несколько секунд и нажмите «Запустить снова»."
               : message.includes("<!DOCTYPE") || message.includes("Unexpected token")
-              ? "OMR-сервис недоступен. Запустите приложение через Docker Compose."
+              ? "OMR-сервис недоступен. Перезапустите приложение; Docker Desktop для установщика не требуется."
               : message,
           page_count: current?.page_count || null,
           detected_bpm: current?.detected_bpm || null,
@@ -731,7 +743,7 @@ export default function Home() {
     const current = omrJob;
     if (current?.id) {
       try {
-        const response = await fetch(`/api/omr/jobs/${current.id}`, {
+        const response = await fetch(omrRequestUrl(`/api/omr/jobs/${current.id}`), {
           method: "DELETE",
         });
         if (response.ok) setOmrJob((await response.json()) as OmrJob);

@@ -29,7 +29,9 @@
     "next": "16.2.6",
     "opensheetmusicdisplay": "^2.0.0",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "vinext": "0.0.50",
+    "vite": "8.0.13"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",
@@ -48,8 +50,6 @@
     "tailwindcss": "4.2.1",
     "tsx": "^4.23.1",
     "typescript": "5.9.3",
-    "vinext": "0.0.50",
-    "vite": "8.0.13",
     "wrangler": "4.92.0"
   },
   "build": {
@@ -62,6 +62,7 @@
     },
     "files": [
       "desktop/**/*",
+      "!desktop/native{,/**/*}",
       "package.json"
     ],
     "extraResources": [
@@ -70,7 +71,6 @@
         "to": "server",
         "filter": [
           "!node_modules{,/**/*}",
-          "!dist{,/**/*}",
           "!.next{,/**/*}",
           "!release{,/**/*}",
           "!.git{,/**/*}",
@@ -78,6 +78,10 @@
           "!omr-data{,/**/*}",
           "!*.log"
         ]
+      },
+      {
+        "from": "desktop/native",
+        "to": "native"
       }
     ],
     "mac": {
