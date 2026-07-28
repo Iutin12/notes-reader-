@@ -74,6 +74,8 @@ type ScoreClickPosition = {
   y: number;
   height: number;
 };
+type PianoKeyHand = "left" | "right" | "both";
+type PianoKeyState = { midi: number; hand: PianoKeyHand };
 
 const PIANO_LOW_MIDI = 36; // C2
 const PIANO_HIGH_MIDI = 96; // C7
@@ -83,22 +85,22 @@ function isBlackPianoKey(midi: number) {
   return blackPitchClasses.has(((midi % 12) + 12) % 12);
 }
 
-function PianoKeyboard({ notes }: { notes: number[] }) {
+function PianoKeyboard({ keys }: { keys: PianoKeyState[] }) {
   const allKeys = Array.from(
     { length: PIANO_HIGH_MIDI - PIANO_LOW_MIDI + 1 },
     (_, index) => PIANO_LOW_MIDI + index,
   );
   const whiteKeys = allKeys.filter((midi) => !isBlackPianoKey(midi));
-  const active = new Set(notes);
+  const active = new Map(keys.map((key) => [key.midi, key.hand]));
   return (
     <div className="keyboard-guide" aria-label="Клавиатура фортепиано">
       <div className="keyboard-guide-heading">
         <span>Клавиши аккорда</span>
-        <small>{notes.length ? notes.map((midi) => nameForMidi(midi, false)).join(" · ") : "Нажмите на ноту в партитуре"}</small>
+        <small>{keys.length ? keys.map((key) => nameForMidi(key.midi, false)).join(" · ") : "Нажмите на ноту в партитуре"}</small>
       </div>
       <div className="piano-keyboard" style={{ "--white-key-count": whiteKeys.length } as React.CSSProperties}>
         {whiteKeys.map((midi) => (
-          <i className={`piano-key white ${active.has(midi) ? "active" : ""}`} key={midi}>
+          <i className={`piano-key white ${active.get(midi) || ""}`} key={midi}>
             {midi % 12 === 0 && <b>C{Math.floor(midi / 12) - 1}</b>}
           </i>
         ))}
@@ -106,7 +108,7 @@ function PianoKeyboard({ notes }: { notes: number[] }) {
           const whitesBefore = whiteKeys.filter((white) => white < midi).length;
           return (
             <i
-              className={`piano-key black ${active.has(midi) ? "active" : ""}`}
+              className={`piano-key black ${active.get(midi) || ""}`}
               key={midi}
               style={{ left: `${(whitesBefore / whiteKeys.length) * 100}%` }}
             />
@@ -424,13 +426,28 @@ export default function Home() {
 
   const totalDuration = score ? scoreDuration(score, speed) : 0;
   const active = visibleEvents[currentEvent] || null;
-  const activeChordMidi = useMemo(() => {
+  const activeChordKeys = useMemo<PianoKeyState[]>(() => {
     if (!active) return [];
-    return [...new Set(
-      visibleEvents
-        .filter((event) => Math.abs(event.startBeat - active.startBeat) < 0.0001)
-        .flatMap((event) => event.midi.map((midi) => midi + transpose)),
-    )].sort((a, b) => a - b);
+    const handsByMidi = new Map<number, Set<Exclude<PianoKeyHand, "both">>>();
+    visibleEvents
+      .filter((event) => Math.abs(event.startBeat - active.startBeat) < 0.0001)
+      .forEach((event) => {
+        // In a piano MusicXML part, staff 1 is normally the right hand and
+        // staff 2 the left. The rule also keeps a same-pitch unison visible.
+        const hand = event.staff <= 1 ? "right" : "left";
+        event.midi.forEach((midi) => {
+          const key = midi + transpose;
+          const hands = handsByMidi.get(key) || new Set<Exclude<PianoKeyHand, "both">>();
+          hands.add(hand);
+          handsByMidi.set(key, hands);
+        });
+      });
+    return [...handsByMidi.entries()]
+      .map(([midi, hands]) => ({
+        midi,
+        hand: (hands.size > 1 ? "both" : [...hands][0] || "right") as PianoKeyHand,
+      }))
+      .sort((a, b) => a.midi - b.midi);
   }, [active, transpose, visibleEvents]);
   const currentMeasure = active?.measure || 1;
 
@@ -1605,7 +1622,7 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="transport" aria-label="Управление воспроизведением">
+      <section className={`transport ${keyboardGuide ? "with-keyboard" : ""}`} aria-label="Управление воспроизведением">
         <div className="transport-main">
           <button className="control-button" onClick={() => moveEvent(-1)} aria-label="Предыдущее событие"><Icon>‹</Icon></button>
           <button className="play-button" onClick={togglePlay} aria-label={playing ? "Пауза" : "Воспроизвести"}>{playing ? "Ⅱ" : "▶"}</button>
@@ -1657,7 +1674,7 @@ export default function Home() {
           <button className={`toggle-button ${metronome ? "on" : ""}`} onClick={() => setMetronome(!metronome)}><span>♩</span> Метроном</button>
           <button className={`toggle-button ${repeat ? "on" : ""}`} onClick={() => setRepeat(!repeat)}><span>↻</span> Повтор</button>
         </div>
-        {keyboardGuide && <PianoKeyboard notes={activeChordMidi} />}
+        {keyboardGuide && <PianoKeyboard keys={activeChordKeys} />}
       </section>
 
       {settingsOpen && (
