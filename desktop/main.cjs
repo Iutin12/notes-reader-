@@ -28,7 +28,7 @@ function createWindow() {
     minWidth: 980,
     minHeight: 680,
     backgroundColor: "#f6f5f0",
-    title: "Нотера — тренажёр чтения нот",
+    title: `Нотера ${app.getVersion()} — тренажёр чтения нот`,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -64,6 +64,33 @@ function waitForUrl(url, label, attempt = 0) {
     function retry() {
       if (attempt >= 90) reject(new Error(`${label} не ответил за 3 минуты.`));
       else setTimeout(() => waitForUrl(url, label, attempt + 1).then(resolve, reject), 2000);
+    }
+  });
+}
+
+function waitForWebAssets(attempt = 0) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(APP_URL, (response) => {
+      let html = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { html += chunk; });
+      response.on("end", () => {
+        const asset = html.match(/(?:href|src)="(\/assets\/[^\"]+\.(?:css|js))"/i)?.[1];
+        if (!asset) return retry();
+        const assetRequest = http.get(`http://127.0.0.1:3000${asset}`, (assetResponse) => {
+          assetResponse.resume();
+          if (assetResponse.statusCode && assetResponse.statusCode < 300) resolve();
+          else retry();
+        });
+        assetRequest.on("error", retry);
+        assetRequest.setTimeout(2000, () => { assetRequest.destroy(); retry(); });
+      });
+    });
+    request.on("error", retry);
+    request.setTimeout(2000, () => { request.destroy(); retry(); });
+    function retry() {
+      if (attempt >= 90) reject(new Error("Интерфейс запустился без стилей и скриптов. Переустановите Нотеру из последней сборки."));
+      else setTimeout(() => waitForWebAssets(attempt + 1).then(resolve, reject), 2000);
     }
   });
 }
@@ -124,7 +151,7 @@ async function startApplication() {
   startWebServer();
   startOmrServer();
   await Promise.all([
-    waitForUrl(APP_URL, "Интерфейс Нотеры"),
+    waitForWebAssets(),
     waitForUrl(OMR_URL, "Сервис распознавания"),
   ]);
   await mainWindow.loadURL(APP_URL);

@@ -1,6 +1,6 @@
 {
   "name": "notera-score-reader",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Локальный тренажёр чтения и проигрывания нот",
   "private": true,
   "main": "desktop/main.cjs",
