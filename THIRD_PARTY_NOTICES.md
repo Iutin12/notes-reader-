@@ -2,8 +2,8 @@
 
 ## Audiveris
 
-The Docker build downloads the unmodified official Audiveris 5.10.2 Linux
-installer from:
+The Docker image and autonomous desktop installers download the unmodified
+official Audiveris 5.10.2 platform installers from:
 
 https://github.com/Audiveris/audiveris/releases/tag/5.10.2
 
@@ -12,9 +12,9 @@ Affero General Public License, version 3. Its source code is available at:
 
 https://github.com/Audiveris/audiveris/tree/5.10.2
 
-The downloaded package is verified against the SHA-256 digest published by the
-official GitHub release API. This repository does not contain or modify the
-Audiveris binary.
+The Docker package is verified against the SHA-256 digest published by the
+official GitHub release API. Desktop build scripts download the matching macOS
+or Windows installer directly from this release and do not modify Audiveris.
 
 ## Salamander Grand Piano
 

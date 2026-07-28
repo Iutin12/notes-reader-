@@ -1,4 +1,6 @@
 allowBuilds:
+  electron: true
+  electron-winstaller: false
   esbuild: true
   gl: false
   sharp: true

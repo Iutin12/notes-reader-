@@ -15,21 +15,35 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
+import uvicorn
 
 DATA_DIR = Path(os.environ.get("OMR_DATA_DIR", "/tmp/notera-omr-jobs")).resolve()
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", 50 * 1024 * 1024))
 MAX_PDF_PAGES = int(os.environ.get("MAX_PDF_PAGES", 40))
 OMR_TIMEOUT_SECONDS = int(os.environ.get("OMR_TIMEOUT_SECONDS", 900))
 AUDIVERIS_BIN = os.environ.get("AUDIVERIS_BIN", "/usr/local/bin/audiveris")
+NATIVE_PORTABLE = os.environ.get("OMR_NATIVE_PORTABLE", "") == "1"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(
     title="Notera OMR",
     version="1.0.0",
     description="Isolated PDF-to-MusicXML service powered by Audiveris.",
+)
+
+# In the desktop edition the interface and OMR worker run on different local
+# ports. They never accept traffic from the network, but the browser renderer
+# still needs this explicit local CORS permission.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 processes: dict[str, subprocess.Popen[str]] = {}
@@ -294,6 +308,64 @@ def musicxml_quality(path: Path) -> tuple[int, int, int]:
     return sounding_notes, nonempty_measures, len(measures)
 
 
+def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
+    """Run an all-in-one Audiveris desktop build without Docker utilities.
+
+    Official Audiveris macOS/Windows bundles already include a JRE and can
+    read PDF directly. This path deliberately avoids Poppler, ImageMagick and
+    Tesseract, which keeps the desktop installer self-contained. The Docker
+    service retains the higher-resolution preprocessing path below.
+    """
+    directory = job_dir(job_id)
+    output_dir = directory / "audiveris-output"
+    output_dir.mkdir(exist_ok=True)
+    write_job(
+        job_id,
+        status="processing",
+        stage="recognizing",
+        message="Audiveris распознаёт партитуру локально…",
+    )
+    try:
+        run_checked(
+            [
+                AUDIVERIS_BIN,
+                "-batch",
+                "-transcribe",
+                "-export",
+                "-output",
+                str(output_dir),
+                "--",
+                str(source),
+            ],
+            timeout=OMR_TIMEOUT_SECONDS,
+            log_file=directory / "audiveris.log",
+        )
+        mxl_files = sorted(output_dir.rglob("*.mxl"))
+        if not mxl_files:
+            raise RuntimeError("Audiveris не создал файл MusicXML.")
+        write_job(job_id, stage="building", message="Создаём партитуру MusicXML…")
+        extract_musicxml(mxl_files[0], directory / "result.musicxml")
+        write_job(
+            job_id,
+            status="ready",
+            stage="ready",
+            message=(
+                f"Партитура готова: обработано {page_count} страниц локально. "
+                "Проверьте высоту и длительности нот."
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 - user-safe task boundary
+        write_job(
+            job_id,
+            status="error",
+            stage="error",
+            message=(
+                "Не удалось распознать PDF локально. Подробности сохранены в "
+                f"audiveris.log: {exc}"
+            ),
+        )
+
+
 def process_pdf(job_id: str) -> None:
     directory = job_dir(job_id)
     source = directory / "source.pdf"
@@ -327,6 +399,10 @@ def process_pdf(job_id: str) -> None:
                 f"В PDF {page_count} страниц. Разрешено не более {MAX_PDF_PAGES}."
             )
         write_job(job_id, page_count=page_count)
+
+        if NATIVE_PORTABLE:
+            process_pdf_portable(job_id, source, page_count)
+            return
 
         run_checked(
             [
@@ -597,3 +673,7 @@ async def cancel_or_delete_job(job_id: str) -> JobPublic:
         message="Обработка отменена пользователем.",
     )
     return public_job(updated)
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8000, workers=1)

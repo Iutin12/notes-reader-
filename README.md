@@ -42,6 +42,42 @@ pnpm install
 pnpm dev
 ```
 
+### Установщики для macOS и Windows
+
+Установщик открывает Нотеру как обычное настольное приложение и не требует
+Docker Desktop. В автономный выпуск входят локальный OMR-сервис и официальный
+Audiveris с Java Runtime; PDF и результаты остаются на компьютере пользователя.
+Первый старт может занять до минуты, а обработанные произведения сохраняются в
+папке данных приложения.
+
+Собрать установщики из исходного кода:
+
+```bash
+pnpm install
+pnpm desktop:build:mac # macOS: .dmg
+pnpm desktop:build:win # Windows: .exe (NSIS)
+```
+
+Перед локальной сборкой подготовьте автономный OMR для нужной ОС:
+
+```bash
+bash scripts/build-native-omr-macos.sh       # macOS
+powershell -ExecutionPolicy Bypass -File scripts/build-native-omr-windows.ps1 # Windows
+```
+
+Готовые файлы появляются в папке `release/`. Автоматическая сборка для двух
+платформ доступна через GitHub Actions: **Actions → Desktop installers → Run
+workflow**. После завершения скачайте `Notera-macOS-arm64` или
+`Notera-Windows-x64` из блока Artifacts. Без сертификата Apple или Microsoft
+система может показать стандартное предупреждение для неподписанного приложения.
+
+Установка для пользователя:
+
+- macOS: откройте `.dmg`, перетащите «Нотеру» в «Программы» и при первом запуске
+  нажмите правой кнопкой → «Открыть».
+- Windows: запустите `Notera-Setup-…exe`, выберите папку установки и подтвердите
+  предупреждение SmartScreen через «Подробнее» → «Выполнить в любом случае».
+
 ## Что работает
 
 - загрузка PDF, `.musicxml`, `.xml`, `.mxl`, `.mid` и `.midi`;

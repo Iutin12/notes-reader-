@@ -45,3 +45,6 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+/release/
+/desktop/native/
+/scripts/.native-build/
