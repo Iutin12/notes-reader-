@@ -27,8 +27,12 @@ python3 -m venv "$venv_dir"
 curl --fail --location --retry 3 \
   "https://github.com/Audiveris/audiveris/releases/download/5.10.2/Audiveris-5.10.2-macosx-$audiveris_arch.dmg" \
   --output "$audiveris_dmg"
-mount_point="$(hdiutil attach -nobrowse -readonly -acceptlicense "$audiveris_dmg" | awk '/\/Volumes\// {print substr($0, index($0, "/Volumes/")); exit}')"
-if [[ -z "$mount_point" || ! -d "$mount_point/Audiveris.app" ]]; then
+mount_point="$build_dir/audiveris-mount"
+mkdir -p "$mount_point"
+# The official DMG has an interactive licence prompt. Feed its affirmative
+# answer and use a fixed non-GUI mount point so the same command works in CI.
+printf 'Y\n' | hdiutil attach -nobrowse -readonly -noverify -mountpoint "$mount_point" "$audiveris_dmg"
+if [[ ! -d "$mount_point/Audiveris.app" ]]; then
   echo "Could not mount the official Audiveris DMG." >&2
   exit 1
 fi
