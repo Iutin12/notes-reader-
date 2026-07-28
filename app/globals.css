@@ -475,11 +475,12 @@ kbd { border: 1px solid var(--line); background: var(--paper); padding: 2px 5px;
   position: absolute;
   pointer-events: none;
   z-index: 2;
-  border-left: 3px solid #15945b;
-  border-radius: 5px;
-  background: color-mix(in srgb, #43b77d 28%, transparent);
-  box-shadow: 0 0 0 2px rgba(21, 148, 91, .12), 0 1px 8px rgba(14, 83, 49, .2);
-  transition: left .08s linear, top .08s linear, height .08s linear;
+  border-left: 2px solid #15945b;
+  border-right: 2px solid rgba(21, 148, 91, .55);
+  border-radius: 0;
+  background: color-mix(in srgb, #43b77d 20%, transparent);
+  box-shadow: 0 0 12px rgba(14, 83, 49, .16);
+  transition: left .14s linear, width .14s linear;
 }
 .playback-highlight[hidden] { display: none; }
 .paper svg { max-width: 100%; height: auto; }

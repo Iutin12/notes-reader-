@@ -852,15 +852,19 @@ export default function Home() {
         // The OSMD cursor can span a whole staff and its cached coordinates can
         // differ after SVG reflow. Highlight the rendered noteheads instead.
         const left = Math.min(...noteBounds.map((rect) => rect.left));
-        const right = Math.max(...noteBounds.map((rect) => rect.right));
         const top = Math.min(...noteBounds.map((rect) => rect.top));
         const bottom = Math.max(...noteBounds.map((rect) => rect.bottom));
-        const padding = 7;
+        const center = (left + Math.max(...noteBounds.map((rect) => rect.right))) / 2;
+        const width = 16;
         highlight.hidden = false;
-        highlight.style.left = `${left - scoreBounds.left - padding}px`;
-        highlight.style.top = `${top - scoreBounds.top - padding}px`;
-        highlight.style.width = `${right - left + padding * 2}px`;
-        highlight.style.height = `${bottom - top + padding * 2}px`;
+        // The visual cursor stays full-page-height so it moves smoothly along
+        // the score instead of jumping up and down with every staff.
+        highlight.style.left = `${center - scoreBounds.left - width / 2}px`;
+        highlight.style.top = "0px";
+        highlight.style.width = `${width}px`;
+        highlight.style.height = `${scoreBounds.height}px`;
+        // Keep the actual note position separately for auto-scroll.
+        highlight.dataset.scrollY = String(top - scoreBounds.top + (bottom - top) / 2);
       } else if (highlight) {
         highlight.hidden = true;
       }
@@ -1016,15 +1020,14 @@ export default function Home() {
                 const scoreElement = scoreRef.current;
                 if (!scoreElement || !score) return;
                 const cursorMarker = scoreElement.querySelector<HTMLElement>(".playback-highlight");
-                const markerRect = cursorMarker && !cursorMarker.hidden
-                  ? cursorMarker.getBoundingClientRect()
-                  : null;
-                // Follow the actual cursor marker. A measure-based ratio jumps
-                // to the bottom on pages with uneven system spacing.
-                const target = markerRect
-                  ? window.scrollY + markerRect.top - window.innerHeight * 0.42
+                const noteY = Number(cursorMarker?.dataset.scrollY);
+                const scoreRect = scoreElement.getBoundingClientRect();
+                // The visual cursor spans the page; its top cannot describe the
+                // current note. Follow the note coordinate saved by advanceCursor.
+                const target = Number.isFinite(noteY)
+                  ? window.scrollY + scoreRect.top + noteY - window.innerHeight * 0.42
                   : window.scrollY;
-                if (markerRect && Math.abs(window.scrollY - target) > 28) {
+                if (Number.isFinite(noteY) && Math.abs(window.scrollY - target) > 28) {
                   window.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
                 }
               });
