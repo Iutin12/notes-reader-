@@ -1,6 +1,6 @@
 {
   "name": "notera-score-reader",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Локальный тренажёр чтения и проигрывания нот",
   "private": true,
   "main": "desktop/main.cjs",
@@ -10,6 +10,7 @@
   },
   "scripts": {
     "dev": "vinext dev",
+    "postinstall": "node scripts/patch-vinext-static-cache.mjs",
     "build": "vinext build",
     "start": "vinext start",
     "test": "node --import tsx --test tests/music.test.ts",
