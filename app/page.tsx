@@ -115,6 +115,18 @@ function editorNoteTop(midi: number, staff: number) {
   return center - (diatonicStepForMidi(midi) - centerStep) * 2.63;
 }
 
+function editorLedgerTops(midi: number, staff: number) {
+  const centerStep = staff === 1 ? diatonicStepForMidi(71) : diatonicStepForMidi(50);
+  const delta = diatonicStepForMidi(midi) - centerStep;
+  const steps: number[] = [];
+  if (delta > 4) for (let step = 6; step <= delta; step += 2) steps.push(centerStep + step);
+  if (delta < -4) for (let step = -6; step >= delta; step -= 2) steps.push(centerStep + step);
+  return steps.map((step) => {
+    const center = staff === 1 ? 25 : 75;
+    return center - (step - centerStep) * 2.63;
+  });
+}
+
 function editorNoteLeft(startBeat: number, beatsPerMeasure: number) {
   return editorTimelineStart + (startBeat / beatsPerMeasure) * editorTimelineWidth;
 }
@@ -1976,14 +1988,22 @@ export default function Home() {
                 const originLeft = editorNoteLeft(note.originalStartBeat ?? note.startBeat, score.beatsPerMeasure);
                 const moved = note.originalMidi !== undefined && (note.originalMidi !== note.midi || note.originalStartBeat !== note.startBeat);
                 const durationKind = note.durationBeats >= 4 ? "whole" : note.durationBeats >= 2 ? "half" : note.durationBeats >= 1 ? "quarter" : note.durationBeats >= 0.5 ? "eighth" : "sixteenth";
+                const step = diatonicStepForMidi(note.midi);
+                const chord = editorNotes
+                  .filter((candidate) => candidate.staff === note.staff && Math.abs(candidate.startBeat - note.startBeat) < 0.001)
+                  .sort((a, b) => diatonicStepForMidi(a.midi) - diatonicStepForMidi(b.midi));
+                const chordIndex = chord.findIndex((candidate) => candidate.id === note.id);
+                const offset = chordIndex > 0 && diatonicStepForMidi(chord[chordIndex - 1].midi) >= step - 1 ? 13 : 0;
+                const outsideStaff = Math.abs(step - (note.staff === 1 ? diatonicStepForMidi(71) : diatonicStepForMidi(50))) > 4;
                 return (
                   <div key={note.id}>
+                    {editorLedgerTops(note.midi, note.staff).map((ledgerTop) => <i className="editor-ledger-line" style={{ top: `${ledgerTop}%`, left: `calc(${left}% + ${offset}px)` }} key={ledgerTop} />)}
                     {moved && <span className="editor-note-origin" style={{ top: `${originTop}%`, left: `${originLeft}%` }} aria-label="Исходное положение ноты"><i /></span>}
                     <button
                       type="button"
                       className={`editor-note staff-${note.staff} ${selectedEditorNote === note.id ? "selected" : ""}`}
                       key={note.id}
-                      style={{ top: `${top}%`, left: `${left}%` }}
+                      style={{ top: `${top}%`, left: `calc(${left}% + ${offset}px)` }}
                       title={`${nameForMidi(note.midi, true)} · ${notationForBeats(note.durationBeats)[1]}`}
                       onPointerDown={(pointerEvent) => {
                         const roll = pointerEvent.currentTarget.closest<HTMLElement>(".score-editor-staff");
@@ -1996,6 +2016,7 @@ export default function Home() {
                     >
                       <span className={`editor-note-symbol ${durationKind}`}><i className="editor-notehead" /><i className="editor-stem" /><i className="editor-flag" /></span>
                     </button>
+                    {outsideStaff && <span className="editor-note-label" style={{ top: `${top}%`, left: `calc(${left}% + ${offset + 18}px)` }}>{nameForMidi(note.midi, true)}</span>}
                   </div>
                 );
               })}
