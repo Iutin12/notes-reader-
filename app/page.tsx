@@ -540,6 +540,7 @@ export default function Home() {
   const [editorMeasure, setEditorMeasure] = useState(1);
   const [editorPartId, setEditorPartId] = useState("");
   const [editorNotes, setEditorNotes] = useState<EditorNote[]>([]);
+  const [editorBeatsPerMeasure, setEditorBeatsPerMeasure] = useState(4);
   const [selectedEditorNote, setSelectedEditorNote] = useState("");
   const [editorDrag, setEditorDrag] = useState<EditorDrag | null>(null);
   const [countIn, setCountIn] = useState(0);
@@ -1400,21 +1401,25 @@ export default function Home() {
     stop(false);
     const measure = active?.measure || 1;
     const partId = active?.partId || score.parts[0]?.id || "P1";
-    const notes = score.events
+    const measureEvents = score.events
       .filter((event) => event.measure === measure && event.partId === partId && !event.isRest)
+    const measureStart = measureEvents[0]?.measureStartBeat ?? Math.min(...measureEvents.map((event) => event.startBeat), 0);
+    const beats = measureEvents[0]?.measureBeats || score.beatsPerMeasure;
+    const notes = measureEvents
       .flatMap((event) => event.midi.map((midi, index) => ({
         id: `${event.id}-${index}`,
         midi,
-        startBeat: event.startBeat % score.beatsPerMeasure,
+        startBeat: event.startBeat - (event.measureStartBeat ?? measureStart),
         durationBeats: event.durationBeats,
         staff: event.staff,
         voice: event.voice,
         originalMidi: midi,
-        originalStartBeat: event.startBeat % score.beatsPerMeasure,
+        originalStartBeat: event.startBeat - (event.measureStartBeat ?? measureStart),
       })));
     setEditorMeasure(measure);
     setEditorPartId(partId);
     setEditorNotes(notes);
+    setEditorBeatsPerMeasure(beats);
     setSelectedEditorNote(notes[0]?.id || "");
     setEditorOpen(true);
   }, [active?.measure, active?.partId, score, stop]);
@@ -1422,7 +1427,7 @@ export default function Home() {
   const saveScoreEditor = useCallback(() => {
     if (!score) return;
     const updatedXml = score.sourceXml
-      ? applyMeasureEditorToMusicXml(score.sourceXml, editorPartId, editorMeasure, editorNotes, score.beatsPerMeasure)
+      ? applyMeasureEditorToMusicXml(score.sourceXml, editorPartId, editorMeasure, editorNotes, editorBeatsPerMeasure)
       : undefined;
     const nextScore = updatedXml ? parseMusicXml(updatedXml) : score;
     setScore({ ...nextScore, title: score.title });
@@ -1435,7 +1440,7 @@ export default function Home() {
     setNotice(updatedXml
       ? "Изменения сохранены в MusicXML. Партитура и воспроизведение обновлены."
       : "Изменения такта сохранены для воспроизведения, клавиатуры и повторного открытия.");
-  }, [editorMeasure, editorNotes, editorPartId, fileName, score]);
+  }, [editorBeatsPerMeasure, editorMeasure, editorNotes, editorPartId, fileName, score]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1964,7 +1969,7 @@ export default function Home() {
                 const centerStep = staff === 1 ? diatonicStepForMidi(71) : diatonicStepForMidi(50);
                 const midi = Math.max(21, Math.min(108, midiForDiatonicStep(centerStep + Math.round((center - relativePercent) / 2.63))));
                 const timelinePercent = ((event.clientX - rect.left) / rect.width) * 100;
-                const startBeat = Math.max(0, Math.min(score.beatsPerMeasure - 0.25, Math.round(((timelinePercent - editorTimelineStart) / editorTimelineWidth) * score.beatsPerMeasure * 4) / 4));
+                const startBeat = Math.max(0, Math.min(editorBeatsPerMeasure - 0.25, Math.round(((timelinePercent - editorTimelineStart) / editorTimelineWidth) * editorBeatsPerMeasure * 4) / 4));
                 const note = { id: `new-${Date.now()}`, midi, startBeat, durationBeats: 1, staff, voice: "1" };
                 setEditorNotes((notes) => [...notes, note]);
                 setSelectedEditorNote(note.id);
@@ -1972,20 +1977,20 @@ export default function Home() {
               onPointerMove={(event) => {
                 if (!editorDrag || !score) return;
                 const steps = Math.round((editorDrag.startY - event.clientY) / (event.currentTarget.getBoundingClientRect().height * 0.0263));
-                const deltaBeats = Math.round((((event.clientX - editorDrag.startX) / editorDrag.rollWidth) * score.beatsPerMeasure / (editorTimelineWidth / 100)) * 4) / 4;
-                setEditorNotes((notes) => notes.map((note) => note.id === editorDrag.noteId ? { ...note, midi: Math.max(21, Math.min(108, midiForDiatonicStep(diatonicStepForMidi(editorDrag.midi) + steps))), startBeat: Math.max(0, Math.min(score.beatsPerMeasure - 0.25, editorDrag.startBeat + deltaBeats)) } : note));
+                const deltaBeats = Math.round((((event.clientX - editorDrag.startX) / editorDrag.rollWidth) * editorBeatsPerMeasure / (editorTimelineWidth / 100)) * 4) / 4;
+                setEditorNotes((notes) => notes.map((note) => note.id === editorDrag.noteId ? { ...note, midi: Math.max(21, Math.min(108, midiForDiatonicStep(diatonicStepForMidi(editorDrag.midi) + steps))), startBeat: Math.max(0, Math.min(editorBeatsPerMeasure - 0.25, editorDrag.startBeat + deltaBeats)) } : note));
               }}
               onPointerUp={() => setEditorDrag(null)}
               onPointerCancel={() => setEditorDrag(null)}
             >
               <div className="editor-clef treble">𝄞</div><div className="editor-clef bass">𝄢</div>
               {[0, 1].map((staff) => <div className={`editor-staff-lines staff-${staff + 1}`} key={staff}>{Array.from({ length: 5 }, (_, line) => <i key={line} />)}</div>)}
-              {Array.from({ length: score.beatsPerMeasure + 1 }, (_, beat) => <i className="editor-beat-line" style={{ left: `${editorNoteLeft(beat, score.beatsPerMeasure)}%` }} key={beat} />)}
+              {Array.from({ length: editorBeatsPerMeasure + 1 }, (_, beat) => <i className="editor-beat-line" style={{ left: `${editorNoteLeft(beat, editorBeatsPerMeasure)}%` }} key={beat} />)}
               {editorNotes.map((note) => {
                 const top = editorNoteTop(note.midi, note.staff);
-                const left = editorNoteLeft(note.startBeat, score.beatsPerMeasure);
+                const left = editorNoteLeft(note.startBeat, editorBeatsPerMeasure);
                 const originTop = note.originalMidi === undefined ? top : editorNoteTop(note.originalMidi, note.staff);
-                const originLeft = editorNoteLeft(note.originalStartBeat ?? note.startBeat, score.beatsPerMeasure);
+                const originLeft = editorNoteLeft(note.originalStartBeat ?? note.startBeat, editorBeatsPerMeasure);
                 const moved = note.originalMidi !== undefined && (note.originalMidi !== note.midi || note.originalStartBeat !== note.startBeat);
                 const durationKind = note.durationBeats >= 4 ? "whole" : note.durationBeats >= 2 ? "half" : note.durationBeats >= 1 ? "quarter" : note.durationBeats >= 0.5 ? "eighth" : "sixteenth";
                 const step = diatonicStepForMidi(note.midi);

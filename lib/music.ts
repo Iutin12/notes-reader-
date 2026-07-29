@@ -6,6 +6,10 @@ export type MusicEvent = {
   staff: number;
   voice: string;
   startBeat: number;
+  // Stored per event so editors can use the true measure boundary even when
+  // the score has a pickup or later time-signature changes.
+  measureStartBeat?: number;
+  measureBeats?: number;
   durationBeats: number;
   midi: number[];
   names: string[];
@@ -246,6 +250,8 @@ export function parseMusicXml(xml: string): ScoreData {
               staff,
               voice,
               startBeat,
+              measureStartBeat: measureStart,
+              measureBeats: measureBeats,
               durationBeats: duration,
               midi,
               names,
