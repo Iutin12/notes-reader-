@@ -91,6 +91,33 @@ type EditorDrag = { noteId: string; startX: number; startY: number; midi: number
 const PIANO_LOW_MIDI = 36; // C2
 const PIANO_HIGH_MIDI = 96; // C7
 const blackPitchClasses = new Set([1, 3, 6, 8, 10]);
+const editorTimelineStart = 7;
+const editorTimelineWidth = 91;
+const diatonicPitchClasses = [0, 2, 4, 5, 7, 9, 11];
+
+function diatonicStepForMidi(midi: number) {
+  const octave = Math.floor(midi / 12) - 1;
+  const pitchClass = ((midi % 12) + 12) % 12;
+  const step = pitchClass <= 1 ? 0 : pitchClass <= 3 ? 1 : pitchClass === 4 ? 2 : pitchClass <= 6 ? 3 : pitchClass <= 8 ? 4 : pitchClass <= 10 ? 5 : 6;
+  return octave * 7 + step;
+}
+
+function midiForDiatonicStep(step: number) {
+  const octave = Math.floor(step / 7);
+  return (octave + 1) * 12 + diatonicPitchClasses[((step % 7) + 7) % 7];
+}
+
+function editorNoteTop(midi: number, staff: number) {
+  // The middle line is B4 in treble and D3 in bass. One diatonic step is
+  // half the distance between staff lines, so sharps/flats stay on one line.
+  const center = staff === 1 ? 25 : 75;
+  const centerStep = staff === 1 ? diatonicStepForMidi(71) : diatonicStepForMidi(50);
+  return center - (diatonicStepForMidi(midi) - centerStep) * 2.63;
+}
+
+function editorNoteLeft(startBeat: number, beatsPerMeasure: number) {
+  return editorTimelineStart + (startBeat / beatsPerMeasure) * editorTimelineWidth;
+}
 
 function isBlackPianoKey(midi: number) {
   return blackPitchClasses.has(((midi % 12) + 12) % 12);
@@ -1920,31 +1947,33 @@ export default function Home() {
                 if (!score || event.target !== event.currentTarget) return;
                 const rect = event.currentTarget.getBoundingClientRect();
                 const staff = event.clientY - rect.top < rect.height / 2 ? 1 : 2;
-                const relativeY = staff === 1 ? event.clientY - rect.top : event.clientY - rect.top - rect.height / 2;
-                const midi = Math.max(21, Math.min(108, Math.round((staff === 1 ? 72 : 48) + (rect.height / 4 - relativeY) / 8)));
-                const startBeat = Math.max(0, Math.min(score.beatsPerMeasure - 0.25, Math.round(((event.clientX - rect.left) / rect.width) * score.beatsPerMeasure * 4) / 4));
+                const relativePercent = ((event.clientY - rect.top) / rect.height) * 100;
+                const center = staff === 1 ? 25 : 75;
+                const centerStep = staff === 1 ? diatonicStepForMidi(71) : diatonicStepForMidi(50);
+                const midi = Math.max(21, Math.min(108, midiForDiatonicStep(centerStep + Math.round((center - relativePercent) / 2.63))));
+                const timelinePercent = ((event.clientX - rect.left) / rect.width) * 100;
+                const startBeat = Math.max(0, Math.min(score.beatsPerMeasure - 0.25, Math.round(((timelinePercent - editorTimelineStart) / editorTimelineWidth) * score.beatsPerMeasure * 4) / 4));
                 const note = { id: `new-${Date.now()}`, midi, startBeat, durationBeats: 1, staff, voice: "1" };
                 setEditorNotes((notes) => [...notes, note]);
                 setSelectedEditorNote(note.id);
               }}
               onPointerMove={(event) => {
                 if (!editorDrag || !score) return;
-                const steps = Math.round((editorDrag.startY - event.clientY) / 8);
-                const deltaBeats = Math.round((((event.clientX - editorDrag.startX) / editorDrag.rollWidth) * score.beatsPerMeasure) * 4) / 4;
-                setEditorNotes((notes) => notes.map((note) => note.id === editorDrag.noteId ? { ...note, midi: Math.max(21, Math.min(108, editorDrag.midi + steps)), startBeat: Math.max(0, Math.min(score.beatsPerMeasure - 0.25, editorDrag.startBeat + deltaBeats)) } : note));
+                const steps = Math.round((editorDrag.startY - event.clientY) / (event.currentTarget.getBoundingClientRect().height * 0.0263));
+                const deltaBeats = Math.round((((event.clientX - editorDrag.startX) / editorDrag.rollWidth) * score.beatsPerMeasure / (editorTimelineWidth / 100)) * 4) / 4;
+                setEditorNotes((notes) => notes.map((note) => note.id === editorDrag.noteId ? { ...note, midi: Math.max(21, Math.min(108, midiForDiatonicStep(diatonicStepForMidi(editorDrag.midi) + steps))), startBeat: Math.max(0, Math.min(score.beatsPerMeasure - 0.25, editorDrag.startBeat + deltaBeats)) } : note));
               }}
               onPointerUp={() => setEditorDrag(null)}
               onPointerCancel={() => setEditorDrag(null)}
             >
               <div className="editor-clef treble">𝄞</div><div className="editor-clef bass">𝄢</div>
               {[0, 1].map((staff) => <div className={`editor-staff-lines staff-${staff + 1}`} key={staff}>{Array.from({ length: 5 }, (_, line) => <i key={line} />)}</div>)}
-              {Array.from({ length: score.beatsPerMeasure + 1 }, (_, beat) => <i className="editor-beat-line" style={{ left: `${(beat / score.beatsPerMeasure) * 100}%` }} key={beat} />)}
+              {Array.from({ length: score.beatsPerMeasure + 1 }, (_, beat) => <i className="editor-beat-line" style={{ left: `${editorNoteLeft(beat, score.beatsPerMeasure)}%` }} key={beat} />)}
               {editorNotes.map((note) => {
-                const base = note.staff === 1 ? 68 : 44;
-                const top = note.staff === 1 ? 25 - (note.midi - base) * 1.6 : 75 - (note.midi - base) * 1.6;
-                const left = (note.startBeat / score.beatsPerMeasure) * 100;
-                const originTop = note.originalMidi === undefined ? top : note.staff === 1 ? 25 - (note.originalMidi - base) * 1.6 : 75 - (note.originalMidi - base) * 1.6;
-                const originLeft = ((note.originalStartBeat ?? note.startBeat) / score.beatsPerMeasure) * 100;
+                const top = editorNoteTop(note.midi, note.staff);
+                const left = editorNoteLeft(note.startBeat, score.beatsPerMeasure);
+                const originTop = note.originalMidi === undefined ? top : editorNoteTop(note.originalMidi, note.staff);
+                const originLeft = editorNoteLeft(note.originalStartBeat ?? note.startBeat, score.beatsPerMeasure);
                 const moved = note.originalMidi !== undefined && (note.originalMidi !== note.midi || note.originalStartBeat !== note.startBeat);
                 const durationKind = note.durationBeats >= 4 ? "whole" : note.durationBeats >= 2 ? "half" : note.durationBeats >= 1 ? "quarter" : note.durationBeats >= 0.5 ? "eighth" : "sixteenth";
                 return (

@@ -603,14 +603,14 @@ input[type="range"] { accent-color: var(--accent); }
 .editor-clef { position: absolute; z-index: 1; left: 12px; color: #17271e; font: 58px/1 Georgia, serif; pointer-events: none; }
 .editor-clef.treble { top: 67px; }.editor-clef.bass { bottom: 66px; }
 .editor-beat-line { position: absolute; z-index: 1; top: 0; bottom: 0; width: 1px; background: color-mix(in srgb, var(--ink) 22%, transparent); pointer-events: none; }
-.editor-note { position: absolute; z-index: 3; width: 30px; height: 58px; transform: translate(-50%, -32%); border: 0; padding: 0; color: #13231a; background: transparent; cursor: grab; touch-action: none; }
+.editor-note { position: absolute; z-index: 3; width: 30px; height: 60px; transform: translate(-50%, -50%); border: 0; padding: 0; color: #13231a; background: transparent; cursor: grab; touch-action: none; }
 .editor-note.staff-1 { color: #15945b; }.editor-note.staff-2 { color: #8061c8; }
 .editor-note.selected { outline: 2px solid var(--accent); outline-offset: 4px; }
 .editor-note span { pointer-events: none; }
 .editor-note-symbol { position: relative; display: block; width: 100%; height: 100%; }
-.editor-notehead { position: absolute; top: 22px; left: 5px; display: block; width: 19px; height: 13px; border-radius: 50%; background: currentColor; transform: rotate(-18deg); }
+.editor-notehead { position: absolute; top: 24px; left: 5px; display: block; width: 19px; height: 13px; border-radius: 50%; background: currentColor; transform: rotate(-18deg); }
 .editor-note-symbol.half .editor-notehead, .editor-note-symbol.whole .editor-notehead { box-sizing: border-box; border: 3px solid currentColor; background: var(--paper); }
-.editor-note-symbol.whole .editor-notehead { top: 25px; transform: rotate(0deg); }
+.editor-note-symbol.whole .editor-notehead { top: 24px; transform: rotate(0deg); }
 .editor-stem { position: absolute; top: 1px; left: 23px; display: block; width: 2px; height: 29px; background: currentColor; }
 .editor-note-symbol.whole .editor-stem { display: none; }
 .editor-flag { position: absolute; top: 0; left: 23px; display: none; width: 12px; height: 15px; border-right: 3px solid currentColor; border-bottom: 3px solid currentColor; border-radius: 0 0 12px 0; transform: skewY(24deg); }
