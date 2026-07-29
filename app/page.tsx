@@ -83,6 +83,8 @@ type EditorNote = {
   durationBeats: number;
   staff: number;
   voice: string;
+  originalMidi?: number;
+  originalStartBeat?: number;
 };
 type EditorDrag = { noteId: string; startX: number; startY: number; midi: number; startBeat: number; staff: number; rollWidth: number };
 
@@ -1368,6 +1370,8 @@ export default function Home() {
         durationBeats: event.durationBeats,
         staff: event.staff,
         voice: event.voice,
+        originalMidi: midi,
+        originalStartBeat: event.startBeat % score.beatsPerMeasure,
       })));
     setEditorMeasure(measure);
     setEditorPartId(partId);
@@ -1939,24 +1943,31 @@ export default function Home() {
                 const base = note.staff === 1 ? 68 : 44;
                 const top = note.staff === 1 ? 25 - (note.midi - base) * 1.6 : 75 - (note.midi - base) * 1.6;
                 const left = (note.startBeat / score.beatsPerMeasure) * 100;
+                const originTop = note.originalMidi === undefined ? top : note.staff === 1 ? 25 - (note.originalMidi - base) * 1.6 : 75 - (note.originalMidi - base) * 1.6;
+                const originLeft = ((note.originalStartBeat ?? note.startBeat) / score.beatsPerMeasure) * 100;
+                const moved = note.originalMidi !== undefined && (note.originalMidi !== note.midi || note.originalStartBeat !== note.startBeat);
+                const durationKind = note.durationBeats >= 4 ? "whole" : note.durationBeats >= 2 ? "half" : note.durationBeats >= 1 ? "quarter" : note.durationBeats >= 0.5 ? "eighth" : "sixteenth";
                 return (
-                  <button
-                    type="button"
-                    className={`editor-note staff-${note.staff} ${selectedEditorNote === note.id ? "selected" : ""}`}
-                    key={note.id}
-                    style={{ top: `${top}%`, left: `${left}%` }}
-                    title={`${nameForMidi(note.midi, true)} · ${notationForBeats(note.durationBeats)[1]}`}
-                    onPointerDown={(pointerEvent) => {
-                      const roll = pointerEvent.currentTarget.closest<HTMLElement>(".score-editor-staff");
-                      if (!roll || !score) return;
-                      pointerEvent.stopPropagation();
-                      pointerEvent.currentTarget.setPointerCapture(pointerEvent.pointerId);
-                      setSelectedEditorNote(note.id);
-                      setEditorDrag({ noteId: note.id, startX: pointerEvent.clientX, startY: pointerEvent.clientY, midi: note.midi, startBeat: note.startBeat, staff: note.staff, rollWidth: roll.getBoundingClientRect().width });
-                    }}
-                  >
-                    <span>●</span>
-                  </button>
+                  <div key={note.id}>
+                    {moved && <span className="editor-note-origin" style={{ top: `${originTop}%`, left: `${originLeft}%` }} aria-label="Исходное положение ноты"><i /></span>}
+                    <button
+                      type="button"
+                      className={`editor-note staff-${note.staff} ${selectedEditorNote === note.id ? "selected" : ""}`}
+                      key={note.id}
+                      style={{ top: `${top}%`, left: `${left}%` }}
+                      title={`${nameForMidi(note.midi, true)} · ${notationForBeats(note.durationBeats)[1]}`}
+                      onPointerDown={(pointerEvent) => {
+                        const roll = pointerEvent.currentTarget.closest<HTMLElement>(".score-editor-staff");
+                        if (!roll || !score) return;
+                        pointerEvent.stopPropagation();
+                        pointerEvent.currentTarget.setPointerCapture(pointerEvent.pointerId);
+                        setSelectedEditorNote(note.id);
+                        setEditorDrag({ noteId: note.id, startX: pointerEvent.clientX, startY: pointerEvent.clientY, midi: note.midi, startBeat: note.startBeat, staff: note.staff, rollWidth: roll.getBoundingClientRect().width });
+                      }}
+                    >
+                      <span className={`editor-note-symbol ${durationKind}`}><i className="editor-notehead" /><i className="editor-stem" /><i className="editor-flag" /></span>
+                    </button>
+                  </div>
                 );
               })}
             </div>
