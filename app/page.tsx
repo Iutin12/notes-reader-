@@ -1953,7 +1953,10 @@ export default function Home() {
           {scoreView === "original" && pdfSourceUrl ? (
             <div className="paper pdf-original">
               <iframe src={displayOmrUrl(pdfSourceUrl)} title={`Оригинальный PDF: ${score.title}`} />
-              <div className="pdf-original-note">Оригинальный PDF: внешний вид совпадает с файлом. Для подсветки, клика и исправления откройте «Распознано».</div>
+              <div className="pdf-original-note">
+                <span>Это исходный файл без распознавания. Для подсветки, клика и исправления откройте «Распознано».</span>
+                <a href={`${displayOmrUrl(pdfSourceUrl)}?download=1`}>Скачать исходный PDF</a>
+              </div>
             </div>
           ) : score.sourceXml ? (
             <div

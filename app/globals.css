@@ -526,7 +526,8 @@ kbd { border: 1px solid var(--line); background: var(--paper); padding: 2px 5px;
 .paper svg { max-width: 100%; height: auto; }
 .pdf-original { min-height: min(84vh, 1120px); padding: 0; cursor: default; overflow: hidden; }
 .pdf-original iframe { display: block; width: 100%; height: min(82vh, 1080px); border: 0; background: white; }
-.pdf-original-note { padding: 10px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; background: var(--panel); }
+.pdf-original-note { padding: 10px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; background: var(--panel); display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+.pdf-original-note a { color: var(--accent); font-weight: 700; white-space: nowrap; }
 .dark .paper svg { filter: invert(.86) hue-rotate(160deg); }
 .paper .osmd-cursor {
   opacity: 0 !important;

@@ -843,12 +843,19 @@ async def get_musicxml(job_id: str) -> FileResponse:
 
 
 @app.get("/api/omr/jobs/{job_id}/source")
-async def get_source_pdf(job_id: str) -> FileResponse:
+async def get_source_pdf(job_id: str, download: bool = False) -> FileResponse:
     job = read_job(job_id)
     source = job_dir(job_id) / "source.pdf"
     if job.get("status") != "ready" or not source.exists():
         raise HTTPException(status_code=409, detail="Оригинальный PDF ещё недоступен.")
-    return FileResponse(source, media_type="application/pdf")
+    # Keep the inline response for the in-app viewer, but allow the user to
+    # download the exact uploaded bytes and open them in their own PDF reader.
+    safe_title = re.sub(r"[^A-Za-zА-Яа-я0-9._ -]+", "_", job["file_name"])
+    return FileResponse(
+        source,
+        media_type="application/pdf",
+        filename=Path(safe_title).name if download else None,
+    )
 
 
 @app.get("/api/omr/jobs/{job_id}/pages/{page_number}/thumbnail")
