@@ -20,7 +20,7 @@ mkdir -p "$target_dir" "$build_dir"
 python3 -m venv "$venv_dir"
 "$venv_dir/bin/pip" install --disable-pip-version-check -r "$project_dir/omr-service/requirements.txt" pyinstaller
 "$venv_dir/bin/pyinstaller" --noconfirm --clean --onefile --name notera-omr \
-  --collect-all fastapi --collect-all pydantic --collect-all pypdf --collect-all uvicorn \
+  --collect-all fastapi --collect-all pydantic --collect-all pypdf --collect-all pymupdf --collect-all fitz --collect-all uvicorn \
   --distpath "$target_dir" --workpath "$build_dir/work" --specpath "$build_dir/spec" \
   "$project_dir/omr-service/app/main.py"
 

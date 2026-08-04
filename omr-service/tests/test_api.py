@@ -1,4 +1,5 @@
 from io import BytesIO
+from math import ceil
 
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
@@ -29,6 +30,19 @@ def test_health_exposes_configured_engine() -> None:
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_portable_render_scale_caps_large_pdf_page() -> None:
+    scale = main.portable_render_scale(1002, 1366)
+
+    assert scale < main.PORTABLE_RENDER_DPI / 72
+    assert ceil(1002 * scale) * ceil(1366 * scale) <= main.AUDIVERIS_SAFE_MAX_PIXELS
+
+
+def test_portable_render_scale_keeps_ordinary_page_at_300_dpi() -> None:
+    scale = main.portable_render_scale(595, 842)
+
+    assert scale == main.PORTABLE_RENDER_DPI / 72
 
 
 def test_accepts_a_small_valid_pdf(monkeypatch) -> None:

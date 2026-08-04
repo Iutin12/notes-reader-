@@ -17,8 +17,9 @@ from xml.etree import ElementTree as ET
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+import fitz
 from pydantic import BaseModel, Field
-from pypdf import PdfReader, PdfWriter
+from pypdf import PdfReader
 import uvicorn
 
 DATA_DIR = Path(os.environ.get("OMR_DATA_DIR", "/tmp/notera-omr-jobs")).resolve()
@@ -27,6 +28,10 @@ MAX_PDF_PAGES = int(os.environ.get("MAX_PDF_PAGES", 40))
 OMR_TIMEOUT_SECONDS = int(os.environ.get("OMR_TIMEOUT_SECONDS", 900))
 AUDIVERIS_BIN = os.environ.get("AUDIVERIS_BIN", "/usr/local/bin/audiveris")
 NATIVE_PORTABLE = os.environ.get("OMR_NATIVE_PORTABLE", "") == "1"
+# Audiveris refuses source images larger than 20 million pixels. Keep a
+# little headroom for its internal image conversions in the desktop worker.
+AUDIVERIS_SAFE_MAX_PIXELS = 17_500_000
+PORTABLE_RENDER_DPI = 300
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(
@@ -310,13 +315,29 @@ def musicxml_quality(path: Path) -> tuple[int, int, int]:
     return sounding_notes, nonempty_measures, len(measures)
 
 
+def portable_render_scale(page_width_points: float, page_height_points: float) -> float:
+    """Return a PDF render scale that stays below Audiveris' image limit."""
+    if page_width_points <= 0 or page_height_points <= 0:
+        raise ValueError("У страницы PDF некорректный размер.")
+    preferred_scale = PORTABLE_RENDER_DPI / 72
+    # PyMuPDF rounds both rendered dimensions up. Solving
+    # (width * scale + 1) * (height * scale + 1) <= limit leaves room for
+    # those two round-ups, unlike a simple area-only calculation.
+    page_area = page_width_points * page_height_points
+    page_perimeter = page_width_points + page_height_points
+    maximum_scale = (
+        (-page_perimeter + (page_perimeter**2 + 4 * page_area * (AUDIVERIS_SAFE_MAX_PIXELS - 1)) ** 0.5)
+        / (2 * page_area)
+    )
+    return min(preferred_scale, maximum_scale)
+
+
 def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
     """Run an all-in-one Audiveris desktop build without Docker utilities.
 
-    Official Audiveris macOS/Windows bundles already include a JRE and can
-    read PDF directly. This path deliberately avoids Poppler, ImageMagick and
-    Tesseract, which keeps the desktop installer self-contained. The Docker
-    service retains the higher-resolution preprocessing path below.
+    PDF pages are rendered by the bundled Python worker before reaching
+    Audiveris. This avoids Audiveris' 20-million-pixel PDF image limit while
+    keeping the installer self-contained (no Poppler or ImageMagick needed).
     """
     directory = job_dir(job_id)
     output_dir = directory / "audiveris-output"
@@ -329,25 +350,36 @@ def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
         message="Audiveris распознаёт партитуру локально…",
     )
     try:
-        # Process individual PDF pages. Audiveris does not expose a dependable
+        # Process individual pages. Audiveris does not expose a dependable
         # in-page percentage, but this gives the interface factual milestones:
         # a percentage advances only after a complete page has been exported.
-        reader = PdfReader(str(source), strict=False)
+        document = fitz.open(source)
         page_xml: list[Path] = []
         logs: list[str] = []
-        for index, pdf_page in enumerate(reader.pages, start=1):
+        for index, pdf_page in enumerate(document, start=1):
             if read_job(job_id)["status"] == "cancelled":
                 return
             write_job(
                 job_id,
                 progress=10 + round((index - 1) / page_count * 78),
+                message=f"Подготавливаем страницу {index} из {page_count}…",
+            )
+            scale = portable_render_scale(pdf_page.rect.width, pdf_page.rect.height)
+            page_image = directory / f"source-page-{index:03d}.png"
+            pixmap = pdf_page.get_pixmap(
+                matrix=fitz.Matrix(scale, scale),
+                alpha=False,
+            )
+            pixmap.save(str(page_image))
+            logs.append(
+                f"Страница {index}: подготовлено изображение "
+                f"{pixmap.width}x{pixmap.height} ({pixmap.width * pixmap.height:,} пикселей, "
+                f"{round(scale * 72)} DPI)."
+            )
+            write_job(
+                job_id,
                 message=f"Audiveris распознаёт страницу {index} из {page_count}…",
             )
-            page_pdf = directory / f"source-page-{index:03d}.pdf"
-            writer = PdfWriter()
-            writer.add_page(pdf_page)
-            with page_pdf.open("wb") as page_file:
-                writer.write(page_file)
             page_output = output_dir / f"page-{index:03d}"
             page_output.mkdir(exist_ok=True)
             logs.append(run_checked(
@@ -359,7 +391,7 @@ def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
                     "-output",
                     str(page_output),
                     "--",
-                    str(page_pdf),
+                    str(page_image),
                 ],
                 timeout=OMR_TIMEOUT_SECONDS,
             ))
@@ -370,6 +402,7 @@ def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
             extract_musicxml(mxl_files[0], extracted)
             page_xml.append(extracted)
             write_job(job_id, progress=10 + round(index / page_count * 78))
+        document.close()
         (directory / "audiveris.log").write_text("\n\n".join(logs)[-500_000:], encoding="utf-8")
         write_job(job_id, stage="building", progress=88, message="Создаём партитуру MusicXML…")
         merge_page_musicxml(page_xml, directory / "result.musicxml")
@@ -394,8 +427,8 @@ def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
             ),
         )
     finally:
-        for page_pdf in directory.glob("source-page-*.pdf"):
-            page_pdf.unlink(missing_ok=True)
+        for page_image in directory.glob("source-page-*.png"):
+            page_image.unlink(missing_ok=True)
 
 
 def process_pdf(job_id: str) -> None:

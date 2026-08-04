@@ -13,7 +13,7 @@ New-Item -ItemType Directory -Force -Path $TargetDir, $BuildDir | Out-Null
 python -m venv $VenvDir
 & "$VenvDir\Scripts\python.exe" -m pip install --disable-pip-version-check -r "$ProjectDir\omr-service\requirements.txt" pyinstaller
 & "$VenvDir\Scripts\pyinstaller.exe" --noconfirm --clean --onefile --name notera-omr `
-  --collect-all fastapi --collect-all pydantic --collect-all pypdf --collect-all uvicorn `
+  --collect-all fastapi --collect-all pydantic --collect-all pypdf --collect-all pymupdf --collect-all fitz --collect-all uvicorn `
   --distpath $TargetDir --workpath "$BuildDir\work" --specpath "$BuildDir\spec" `
   "$ProjectDir\omr-service\app\main.py"
 
