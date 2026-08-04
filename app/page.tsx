@@ -579,6 +579,7 @@ export default function Home() {
   const [omrJob, setOmrJob] = useState<OmrJob | null>(null);
   const [pendingPdf, setPendingPdf] = useState<File | null>(null);
   const scoreRef = useRef<HTMLDivElement>(null);
+  const scoreAreaRef = useRef<HTMLDivElement>(null);
   const osmdRef = useRef<OsmdInstance | null>(null);
   const scoreClickPositionsRef = useRef<ScoreClickPosition[]>([]);
   const cursorBeatRef = useRef(0);
@@ -836,6 +837,12 @@ export default function Home() {
   useEffect(() => {
     if (score) void renderScore(score);
   }, [score, renderScore]);
+
+  useEffect(() => {
+    if (scoreView === "original") {
+      scoreAreaRef.current?.scrollTo({ top: 0, behavior: "auto" });
+    }
+  }, [scoreView]);
 
   const openScore = useCallback((data: ScoreData, sourceName: string, sourcePdfUrl = "") => {
     stop();
@@ -1931,9 +1938,9 @@ export default function Home() {
           </div>
         </aside>
 
-        <div className="score-area">
+        <div className="score-area" ref={scoreAreaRef}>
           <div className="score-toolbar">
-            <div><span className="status-dot" />Такт {currentMeasure} из {score.measureCount}</div>
+            <div>{scoreView === "original" ? <><span className="status-dot" />Оригинальный PDF</> : <><span className="status-dot" />Такт {currentMeasure} из {score.measureCount}</>}</div>
             <div className="score-toolbar-actions">
               {pdfSourceUrl && <div className="score-view-switch" aria-label="Вид партитуры"><button className={scoreView === "recognized" ? "active" : ""} onClick={() => setScoreView("recognized")}>Распознано</button><button className={scoreView === "original" ? "active" : ""} onClick={() => setScoreView("original")}>Оригинал PDF</button></div>}
               <div className="zoom-note">
