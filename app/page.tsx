@@ -1951,7 +1951,7 @@ export default function Home() {
             </div>
           </div>
           {scoreView === "original" && pdfSourceUrl ? (
-            <div className="paper pdf-original">
+            <div className="paper pdf-original" key="original-pdf-viewer">
               <iframe src={displayOmrUrl(pdfSourceUrl)} title={`Оригинальный PDF: ${score.title}`} />
               <div className="pdf-original-note">
                 <span>Это исходный файл без распознавания. Для подсветки, клика и исправления откройте «Распознано».</span>
@@ -1960,6 +1960,7 @@ export default function Home() {
             </div>
           ) : score.sourceXml ? (
             <div
+              key="recognized-score-view"
               className="paper"
               ref={scoreRef}
               aria-label="Партитура — нажмите на ноты, чтобы играть с этого места"
