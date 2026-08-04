@@ -25,6 +25,7 @@ type SavedScore = {
   edits?: Array<{ id: string; midi: number[]; durationBeats?: number }>;
   tags: string[];
   notes: string;
+  cover?: string;
   pdfSourceUrl?: string;
 };
 type OmrStage =
@@ -453,6 +454,7 @@ function loadSaved(): SavedScore[] {
           ? item.tags.filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0)
           : [],
         notes: typeof item.notes === "string" ? item.notes : "",
+        cover: typeof item.cover === "string" && item.cover.startsWith("data:image/") ? item.cover : undefined,
         pdfSourceUrl: typeof item.pdfSourceUrl === "string" ? item.pdfSourceUrl : undefined,
       }));
   } catch {
@@ -546,6 +548,7 @@ export default function Home() {
   const [libraryNameDraft, setLibraryNameDraft] = useState("");
   const [libraryTagsDraft, setLibraryTagsDraft] = useState("");
   const [libraryNotesDraft, setLibraryNotesDraft] = useState("");
+  const [libraryCoverDraft, setLibraryCoverDraft] = useState("");
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [currentEvent, setCurrentEvent] = useState(0);
@@ -873,6 +876,7 @@ export default function Home() {
       edits: existing?.edits,
       tags: existing?.tags || [],
       notes: existing?.notes || "",
+      cover: existing?.cover,
       pdfSourceUrl: sourcePdfUrl || existing?.pdfSourceUrl,
     };
     const next = [
@@ -1606,8 +1610,9 @@ export default function Home() {
     event.target.value = "";
   };
 
-  const removeSaved = (savedAt: number) => {
-    const next = saved.filter((item) => item.savedAt !== savedAt);
+  const removeSaved = (item: SavedScore) => {
+    if (!window.confirm(`Удалить «${item.name}» из библиотеки? Это действие нельзя отменить.`)) return;
+    const next = saved.filter((savedItem) => savedItem.savedAt !== item.savedAt);
     localStorage.setItem("notera-scores", JSON.stringify(next));
     setSaved(next);
   };
@@ -1636,6 +1641,24 @@ export default function Home() {
     setLibraryNameDraft(item.name);
     setLibraryTagsDraft(item.tags.join(", "));
     setLibraryNotesDraft(item.notes);
+    setLibraryCoverDraft(item.cover || "");
+  };
+
+  const updateLibraryCover = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setNotice("Для обложки выберите изображение PNG, JPG или WebP.");
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setNotice("Изображение больше 2 МБ. Выберите файл меньшего размера.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setLibraryCoverDraft(typeof reader.result === "string" ? reader.result : "");
+    reader.readAsDataURL(file);
   };
 
   const saveSavedMetadata = () => {
@@ -1643,7 +1666,7 @@ export default function Home() {
     const tags = [...new Set(libraryTagsDraft.split(",").map((tag) => tag.trim()).filter(Boolean))];
     const name = libraryNameDraft.trim() || "Без названия";
     const next = saved.map((item) => item.savedAt === editingSavedAt
-      ? { ...item, name, tags, notes: libraryNotesDraft.trim() }
+      ? { ...item, name, tags, notes: libraryNotesDraft.trim(), cover: libraryCoverDraft || undefined }
       : item);
     localStorage.setItem("notera-scores", JSON.stringify(next));
     setSaved(next);
@@ -1782,9 +1805,9 @@ export default function Home() {
         <section className="library-list">
           {libraryItems.length ? libraryItems.map((item) => (
             <article className="library-card" key={item.savedAt}>
-              <button className="library-open" onClick={() => openSavedScore(item)}><span className="sheet-thumb">𝄞</span><span><b>{item.name}</b><small>{item.fileName} · {new Date(item.savedAt).toLocaleDateString("ru-RU")}</small>{item.notes && <em>{item.notes}</em>}<span className="tag-row">{item.tags.length ? item.tags.map((tag) => <i key={tag}>{tag}</i>) : <i className="empty-tag">Без тегов</i>}</span></span></button>
-              <div className="library-actions"><button className="ghost-button tag-edit-button" onClick={() => editSavedMetadata(item)}>✎ Изменить</button><button className="delete-button" onClick={() => removeSaved(item.savedAt)} aria-label={`Удалить ${item.name}`}>×</button></div>
-              {editingSavedAt === item.savedAt && <div className="library-edit"><label>Название<input value={libraryNameDraft} onChange={(event) => setLibraryNameDraft(event.target.value)} placeholder="Название произведения" /></label><label>Теги<input value={libraryTagsDraft} onChange={(event) => setLibraryTagsDraft(event.target.value)} placeholder="Например: разбор, классика" /><small>Введите несколько слов через запятую.</small></label><div className="tag-suggestions" aria-label="Быстрые теги">{["Разбор", "Выучено", "Любимое", "Классика", "Концерт"].map((tag) => <button key={tag} type="button" onClick={() => setLibraryTagsDraft((value) => value.split(",").map((part) => part.trim()).includes(tag) ? value : [value.trim(), tag].filter(Boolean).join(", "))}>+ {tag}</button>)}</div><label>Заметка<textarea value={libraryNotesDraft} onChange={(event) => setLibraryNotesDraft(event.target.value)} placeholder="Что нужно повторить или исправить" /></label><div><button className="primary-button" onClick={saveSavedMetadata}>Сохранить изменения</button><button className="ghost-button" onClick={() => setEditingSavedAt(null)}>Отменить</button></div></div>}
+              <button className="library-open" onClick={() => openSavedScore(item)}><span className="sheet-thumb">{item.cover ? <img src={item.cover} alt="" /> : "𝄞"}</span><span><b>{item.name}</b><small>{item.fileName} · {new Date(item.savedAt).toLocaleDateString("ru-RU")}</small>{item.notes && <em>{item.notes}</em>}<span className="tag-row">{item.tags.length ? item.tags.map((tag) => <i key={tag}>{tag}</i>) : <i className="empty-tag">Без тегов</i>}</span></span></button>
+              <div className="library-actions"><button className="edit-card-button" onClick={() => editSavedMetadata(item)} aria-label={`Изменить ${item.name}`}>✎<span>Изменить</span></button><button className="delete-button" onClick={() => removeSaved(item)} aria-label={`Удалить ${item.name}`}>×</button></div>
+              {editingSavedAt === item.savedAt && <div className="library-edit"><label>Название<input value={libraryNameDraft} onChange={(event) => setLibraryNameDraft(event.target.value)} placeholder="Название произведения" /></label><label>Обложка<input type="file" accept="image/png,image/jpeg,image/webp" onChange={updateLibraryCover} /><small>PNG, JPG или WebP до 2 МБ.</small></label>{libraryCoverDraft && <div className="cover-preview"><img src={libraryCoverDraft} alt="Предпросмотр обложки" /><button type="button" className="ghost-button" onClick={() => setLibraryCoverDraft("")}>Убрать фото</button></div>}<label>Теги<input value={libraryTagsDraft} onChange={(event) => setLibraryTagsDraft(event.target.value)} placeholder="Например: разбор, классика" /><small>Введите несколько слов через запятую.</small></label><div className="tag-suggestions" aria-label="Быстрые теги">{["Разбор", "Выучено", "Любимое", "Классика", "Концерт"].map((tag) => <button key={tag} type="button" onClick={() => setLibraryTagsDraft((value) => value.split(",").map((part) => part.trim()).includes(tag) ? value : [value.trim(), tag].filter(Boolean).join(", "))}>+ {tag}</button>)}</div><label>Заметка<textarea value={libraryNotesDraft} onChange={(event) => setLibraryNotesDraft(event.target.value)} placeholder="Что нужно повторить или исправить" /></label><div><button className="primary-button" onClick={saveSavedMetadata}>Сохранить изменения</button><button className="ghost-button" onClick={() => setEditingSavedAt(null)}>Отменить</button></div></div>}
             </article>
           )) : <div className="library-empty"><b>{saved.length ? "Ничего не найдено" : "Библиотека пока пуста"}</b><span>{saved.length ? "Измените запрос или выбранный тег." : "Загрузите MusicXML, MIDI или PDF — партитура сохранится здесь после обработки."}</span></div>}
         </section>
@@ -1856,10 +1879,10 @@ export default function Home() {
               {saved.map((item) => (
                 <article className="recent-card" key={item.savedAt}>
                   <button className="recent-open" onClick={() => openSavedScore(item)}>
-                    <span className="sheet-thumb">𝄞</span>
+                    <span className="sheet-thumb">{item.cover ? <img src={item.cover} alt="" /> : "𝄞"}</span>
                     <span><b>{item.name}</b><small>{new Date(item.savedAt).toLocaleDateString("ru-RU")}</small></span>
                   </button>
-                  <button className="delete-button" onClick={() => removeSaved(item.savedAt)} aria-label={`Удалить ${item.name}`}>×</button>
+                  <button className="delete-button" onClick={() => removeSaved(item)} aria-label={`Удалить ${item.name}`}>×</button>
                 </article>
               ))}
             </div>
