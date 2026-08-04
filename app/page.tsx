@@ -25,6 +25,7 @@ type SavedScore = {
   edits?: Array<{ id: string; midi: number[]; durationBeats?: number }>;
   tags: string[];
   notes: string;
+  pdfSourceUrl?: string;
 };
 type OmrStage =
   | "uploading"
@@ -45,6 +46,7 @@ type OmrJob = {
   detected_bpm: number | null;
   progress?: number;
   result_url: string | null;
+  source_url: string | null;
   thumbnails: string[];
 };
 type FractionLike = {
@@ -312,6 +314,12 @@ function omrRequestUrl(input: RequestInfo | URL): RequestInfo | URL {
   return baseUrl ? `${baseUrl}${input}` : input;
 }
 
+function displayOmrUrl(path: string) {
+  if (!path || typeof window === "undefined") return path;
+  const resolved = omrRequestUrl(path);
+  return typeof resolved === "string" ? resolved : path;
+}
+
 async function fetchWithRetry(
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -445,6 +453,7 @@ function loadSaved(): SavedScore[] {
           ? item.tags.filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0)
           : [],
         notes: typeof item.notes === "string" ? item.notes : "",
+        pdfSourceUrl: typeof item.pdfSourceUrl === "string" ? item.pdfSourceUrl : undefined,
       }));
   } catch {
     return [];
@@ -528,6 +537,8 @@ export default function Home() {
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saved, setSaved] = useState<SavedScore[]>([]);
+  const [scoreView, setScoreView] = useState<"recognized" | "original">("recognized");
+  const [pdfSourceUrl, setPdfSourceUrl] = useState("");
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [libraryQuery, setLibraryQuery] = useState("");
   const [libraryTag, setLibraryTag] = useState("");
@@ -826,10 +837,12 @@ export default function Home() {
     if (score) void renderScore(score);
   }, [score, renderScore]);
 
-  const openScore = useCallback((data: ScoreData, sourceName: string) => {
+  const openScore = useCallback((data: ScoreData, sourceName: string, sourcePdfUrl = "") => {
     stop();
     setScore({ ...data, title: displayNameFromFile(sourceName) });
     setFileName(sourceName);
+    setPdfSourceUrl(sourcePdfUrl);
+    setScoreView("recognized");
     setRangeStart(1);
     setRangeEnd(data.measureCount);
     setEnabledParts(new Set(data.parts.map((part) => part.id)));
@@ -841,7 +854,7 @@ export default function Home() {
     );
   }, [stop]);
 
-  const persistScore = useCallback((data: ScoreData, sourceName: string, xml: string) => {
+  const persistScore = useCallback((data: ScoreData, sourceName: string, xml: string, sourcePdfUrl = "") => {
     const existing = loadSaved().find((item) => item.fileName === sourceName || item.name === displayNameFromFile(sourceName));
     const entry: SavedScore = {
       name: displayNameFromFile(sourceName),
@@ -852,6 +865,7 @@ export default function Home() {
       edits: existing?.edits,
       tags: existing?.tags || [],
       notes: existing?.notes || "",
+      pdfSourceUrl: sourcePdfUrl || existing?.pdfSourceUrl,
     };
     const next = [
       entry,
@@ -883,6 +897,7 @@ export default function Home() {
         detected_bpm: null,
         progress: 1,
         result_url: null,
+        source_url: null,
         thumbnails: [],
       });
       try {
@@ -924,13 +939,14 @@ export default function Home() {
         const xml = await result.text();
         const data = parseMusicXml(xml);
         if (job.detected_bpm) data.bpm = job.detected_bpm;
-        openScore(data, file.name);
+        const sourcePdfUrl = job.source_url || "";
+        openScore(data, file.name, sourcePdfUrl);
         setNotice(
           job.detected_bpm
             ? `PDF распознан автоматически. Темп ${job.detected_bpm} BPM считан из первой страницы; проверьте высоту и длительность нот.`
             : "PDF распознан автоматически. Результат может содержать ошибки — проверьте высоту и длительность нот.",
         );
-        persistScore(data, file.name, xml);
+        persistScore(data, file.name, xml, sourcePdfUrl);
         setOmrJob(null);
       } catch (caught) {
         const message =
@@ -950,6 +966,7 @@ export default function Home() {
           detected_bpm: current?.detected_bpm || null,
           progress: current?.progress || 0,
           result_url: null,
+          source_url: current?.source_url || null,
           thumbnails: current?.thumbnails || [],
         }));
       }
@@ -1603,7 +1620,7 @@ export default function Home() {
         : event);
     }
     setLibraryOpen(false);
-    openScore(data, item.fileName);
+    openScore(data, item.fileName, item.pdfSourceUrl || "");
   };
 
   const editSavedMetadata = (item: SavedScore) => {
@@ -1917,12 +1934,21 @@ export default function Home() {
         <div className="score-area">
           <div className="score-toolbar">
             <div><span className="status-dot" />Такт {currentMeasure} из {score.measureCount}</div>
-            <div className="zoom-note">
-              {score.sourceXml && "Нажмите на ноты, чтобы играть отсюда · "}
-              {Math.round(score.bpm * speed)} BPM
+            <div className="score-toolbar-actions">
+              {pdfSourceUrl && <div className="score-view-switch" aria-label="Вид партитуры"><button className={scoreView === "recognized" ? "active" : ""} onClick={() => setScoreView("recognized")}>Распознано</button><button className={scoreView === "original" ? "active" : ""} onClick={() => setScoreView("original")}>Оригинал PDF</button></div>}
+              <div className="zoom-note">
+                {scoreView === "recognized" && score.sourceXml && "Нажмите на ноты, чтобы играть отсюда · "}
+                {scoreView === "original" && "Точный вид оригинала · "}
+                {Math.round(score.bpm * speed)} BPM
+              </div>
             </div>
           </div>
-          {score.sourceXml ? (
+          {scoreView === "original" && pdfSourceUrl ? (
+            <div className="paper pdf-original">
+              <iframe src={displayOmrUrl(pdfSourceUrl)} title={`Оригинальный PDF: ${score.title}`} />
+              <div className="pdf-original-note">Оригинальный PDF: внешний вид совпадает с файлом. Для подсветки, клика и исправления откройте «Распознано».</div>
+            </div>
+          ) : score.sourceXml ? (
             <div
               className="paper"
               ref={scoreRef}

@@ -1,4 +1,5 @@
 from io import BytesIO
+import json
 from math import ceil
 from pathlib import Path
 
@@ -75,6 +76,29 @@ def test_portable_omr_retries_without_swap(monkeypatch, tmp_path: Path) -> None:
     assert result.exists()
     assert "-swap" in calls[0]
     assert "-swap" not in calls[1]
+
+
+def test_ready_job_exposes_original_pdf(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    job_id = "a" * 32
+    directory = tmp_path / job_id
+    directory.mkdir()
+    (directory / "source.pdf").write_bytes(b"%PDF-1.4\n")
+    (directory / "job.json").write_text(json.dumps({
+        "id": job_id,
+        "file_name": "score.pdf",
+        "status": "ready",
+        "stage": "ready",
+        "message": "ready",
+        "created_at": 0,
+        "updated_at": 0,
+    }))
+
+    response = client.get(f"/api/omr/jobs/{job_id}/source")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/pdf")
+    assert response.content.startswith(b"%PDF")
 
 
 def test_accepts_a_small_valid_pdf(monkeypatch) -> None:

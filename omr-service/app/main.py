@@ -66,6 +66,7 @@ class JobPublic(BaseModel):
     created_at: float
     updated_at: float
     result_url: str | None = None
+    source_url: str | None = None
     thumbnails: list[str] = Field(default_factory=list)
 
 
@@ -125,6 +126,11 @@ def public_job(job: dict[str, Any]) -> JobPublic:
         result_url=(
             f"/api/omr/jobs/{job_id}/musicxml"
             if job.get("status") == "ready"
+            else None
+        ),
+        source_url=(
+            f"/api/omr/jobs/{job_id}/source"
+            if job.get("status") == "ready" and (job_dir(job_id) / "source.pdf").exists()
             else None
         ),
         thumbnails=thumbnails,
@@ -834,6 +840,15 @@ async def get_musicxml(job_id: str) -> FileResponse:
         media_type="application/vnd.recordare.musicxml+xml",
         filename=f"{Path(safe_title).stem}.musicxml",
     )
+
+
+@app.get("/api/omr/jobs/{job_id}/source")
+async def get_source_pdf(job_id: str) -> FileResponse:
+    job = read_job(job_id)
+    source = job_dir(job_id) / "source.pdf"
+    if job.get("status") != "ready" or not source.exists():
+        raise HTTPException(status_code=409, detail="Оригинальный PDF ещё недоступен.")
+    return FileResponse(source, media_type="application/pdf")
 
 
 @app.get("/api/omr/jobs/{job_id}/pages/{page_number}/thumbnail")

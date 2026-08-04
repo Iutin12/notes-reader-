@@ -494,6 +494,11 @@ kbd { border: 1px solid var(--line); background: var(--paper); padding: 2px 5px;
   color: var(--muted);
   font-size: 11px;
 }
+.score-toolbar-actions { display: flex; align-items: center; gap: 14px; }
+.score-view-switch { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; background: var(--paper); }
+.score-view-switch button { border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--muted); padding: 6px 9px; font-size: 11px; cursor: pointer; }
+.score-view-switch button:last-child { border-right: 0; }
+.score-view-switch button.active { background: var(--sage); color: var(--ink); font-weight: 700; }
 .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 7px; }
 .paper {
   position: relative;
@@ -519,6 +524,9 @@ kbd { border: 1px solid var(--line); background: var(--paper); padding: 2px 5px;
 }
 .playback-highlight[hidden] { display: none; }
 .paper svg { max-width: 100%; height: auto; }
+.pdf-original { min-height: min(84vh, 1120px); padding: 0; cursor: default; overflow: hidden; }
+.pdf-original iframe { display: block; width: 100%; height: min(82vh, 1080px); border: 0; background: white; }
+.pdf-original-note { padding: 10px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; background: var(--panel); }
 .dark .paper svg { filter: invert(.86) hue-rotate(160deg); }
 .paper .osmd-cursor {
   opacity: 0 !important;
