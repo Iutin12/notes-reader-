@@ -543,6 +543,7 @@ export default function Home() {
   const [libraryQuery, setLibraryQuery] = useState("");
   const [libraryTag, setLibraryTag] = useState("");
   const [editingSavedAt, setEditingSavedAt] = useState<number | null>(null);
+  const [libraryNameDraft, setLibraryNameDraft] = useState("");
   const [libraryTagsDraft, setLibraryTagsDraft] = useState("");
   const [libraryNotesDraft, setLibraryNotesDraft] = useState("");
   const [playing, setPlaying] = useState(false);
@@ -844,9 +845,9 @@ export default function Home() {
     }
   }, [scoreView]);
 
-  const openScore = useCallback((data: ScoreData, sourceName: string, sourcePdfUrl = "") => {
+  const openScore = useCallback((data: ScoreData, sourceName: string, sourcePdfUrl = "", displayName = displayNameFromFile(sourceName)) => {
     stop();
-    setScore({ ...data, title: displayNameFromFile(sourceName) });
+    setScore({ ...data, title: displayName });
     setFileName(sourceName);
     setPdfSourceUrl(sourcePdfUrl);
     setScoreView("recognized");
@@ -864,7 +865,7 @@ export default function Home() {
   const persistScore = useCallback((data: ScoreData, sourceName: string, xml: string, sourcePdfUrl = "") => {
     const existing = loadSaved().find((item) => item.fileName === sourceName || item.name === displayNameFromFile(sourceName));
     const entry: SavedScore = {
-      name: displayNameFromFile(sourceName),
+      name: existing?.name || displayNameFromFile(sourceName),
       fileName: sourceName,
       xml,
       bpm: data.bpm,
@@ -1627,11 +1628,12 @@ export default function Home() {
         : event);
     }
     setLibraryOpen(false);
-    openScore(data, item.fileName, item.pdfSourceUrl || "");
+    openScore(data, item.fileName, item.pdfSourceUrl || "", item.name);
   };
 
   const editSavedMetadata = (item: SavedScore) => {
     setEditingSavedAt(item.savedAt);
+    setLibraryNameDraft(item.name);
     setLibraryTagsDraft(item.tags.join(", "));
     setLibraryNotesDraft(item.notes);
   };
@@ -1639,8 +1641,9 @@ export default function Home() {
   const saveSavedMetadata = () => {
     if (editingSavedAt === null) return;
     const tags = [...new Set(libraryTagsDraft.split(",").map((tag) => tag.trim()).filter(Boolean))];
+    const name = libraryNameDraft.trim() || "Без названия";
     const next = saved.map((item) => item.savedAt === editingSavedAt
-      ? { ...item, tags, notes: libraryNotesDraft.trim() }
+      ? { ...item, name, tags, notes: libraryNotesDraft.trim() }
       : item);
     localStorage.setItem("notera-scores", JSON.stringify(next));
     setSaved(next);
@@ -1780,8 +1783,8 @@ export default function Home() {
           {libraryItems.length ? libraryItems.map((item) => (
             <article className="library-card" key={item.savedAt}>
               <button className="library-open" onClick={() => openSavedScore(item)}><span className="sheet-thumb">𝄞</span><span><b>{item.name}</b><small>{item.fileName} · {new Date(item.savedAt).toLocaleDateString("ru-RU")}</small>{item.notes && <em>{item.notes}</em>}<span className="tag-row">{item.tags.length ? item.tags.map((tag) => <i key={tag}>{tag}</i>) : <i className="empty-tag">Без тегов</i>}</span></span></button>
-              <div className="library-actions"><button className="ghost-button tag-edit-button" onClick={() => editSavedMetadata(item)}>🏷 Теги и заметка</button><button className="delete-button" onClick={() => removeSaved(item.savedAt)} aria-label={`Удалить ${item.name}`}>×</button></div>
-              {editingSavedAt === item.savedAt && <div className="library-edit"><label>Теги<input value={libraryTagsDraft} onChange={(event) => setLibraryTagsDraft(event.target.value)} placeholder="Например: разбор, классика" /><small>Введите несколько слов через запятую.</small></label><div className="tag-suggestions" aria-label="Быстрые теги">{["Разбор", "Выучено", "Любимое", "Классика", "Концерт"].map((tag) => <button key={tag} type="button" onClick={() => setLibraryTagsDraft((value) => value.split(",").map((part) => part.trim()).includes(tag) ? value : [value.trim(), tag].filter(Boolean).join(", "))}>+ {tag}</button>)}</div><label>Заметка<textarea value={libraryNotesDraft} onChange={(event) => setLibraryNotesDraft(event.target.value)} placeholder="Что нужно повторить или исправить" /></label><div><button className="primary-button" onClick={saveSavedMetadata}>Сохранить теги и заметку</button><button className="ghost-button" onClick={() => setEditingSavedAt(null)}>Отменить</button></div></div>}
+              <div className="library-actions"><button className="ghost-button tag-edit-button" onClick={() => editSavedMetadata(item)}>✎ Изменить</button><button className="delete-button" onClick={() => removeSaved(item.savedAt)} aria-label={`Удалить ${item.name}`}>×</button></div>
+              {editingSavedAt === item.savedAt && <div className="library-edit"><label>Название<input value={libraryNameDraft} onChange={(event) => setLibraryNameDraft(event.target.value)} placeholder="Название произведения" /></label><label>Теги<input value={libraryTagsDraft} onChange={(event) => setLibraryTagsDraft(event.target.value)} placeholder="Например: разбор, классика" /><small>Введите несколько слов через запятую.</small></label><div className="tag-suggestions" aria-label="Быстрые теги">{["Разбор", "Выучено", "Любимое", "Классика", "Концерт"].map((tag) => <button key={tag} type="button" onClick={() => setLibraryTagsDraft((value) => value.split(",").map((part) => part.trim()).includes(tag) ? value : [value.trim(), tag].filter(Boolean).join(", "))}>+ {tag}</button>)}</div><label>Заметка<textarea value={libraryNotesDraft} onChange={(event) => setLibraryNotesDraft(event.target.value)} placeholder="Что нужно повторить или исправить" /></label><div><button className="primary-button" onClick={saveSavedMetadata}>Сохранить изменения</button><button className="ghost-button" onClick={() => setEditingSavedAt(null)}>Отменить</button></div></div>}
             </article>
           )) : <div className="library-empty"><b>{saved.length ? "Ничего не найдено" : "Библиотека пока пуста"}</b><span>{saved.length ? "Измените запрос или выбранный тег." : "Загрузите MusicXML, MIDI или PDF — партитура сохранится здесь после обработки."}</span></div>}
         </section>
