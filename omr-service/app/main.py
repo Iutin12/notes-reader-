@@ -388,6 +388,7 @@ def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
                     "-batch",
                     "-transcribe",
                     "-export",
+                    "-swap",
                     "-output",
                     str(page_output),
                     "--",

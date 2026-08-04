@@ -16,7 +16,16 @@ import {
 } from "../lib/music";
 
 type Mode = "continuous" | "event" | "measure" | "fragment" | "training";
-type SavedScore = { name: string; fileName: string; xml: string; bpm?: number; savedAt: number; edits?: Array<{ id: string; midi: number[]; durationBeats?: number }> };
+type SavedScore = {
+  name: string;
+  fileName: string;
+  xml: string;
+  bpm?: number;
+  savedAt: number;
+  edits?: Array<{ id: string; midi: number[]; durationBeats?: number }>;
+  tags: string[];
+  notes: string;
+};
 type OmrStage =
   | "uploading"
   | "queued"
@@ -431,6 +440,11 @@ function loadSaved(): SavedScore[] {
         xml: item.xml!,
         bpm: item.bpm,
         savedAt: item.savedAt!,
+        edits: item.edits,
+        tags: Array.isArray(item.tags)
+          ? item.tags.filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0)
+          : [],
+        notes: typeof item.notes === "string" ? item.notes : "",
       }));
   } catch {
     return [];
@@ -514,6 +528,12 @@ export default function Home() {
   const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saved, setSaved] = useState<SavedScore[]>([]);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryQuery, setLibraryQuery] = useState("");
+  const [libraryTag, setLibraryTag] = useState("");
+  const [editingSavedAt, setEditingSavedAt] = useState<number | null>(null);
+  const [libraryTagsDraft, setLibraryTagsDraft] = useState("");
+  const [libraryNotesDraft, setLibraryNotesDraft] = useState("");
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [currentEvent, setCurrentEvent] = useState(0);
@@ -620,6 +640,20 @@ export default function Home() {
   const trainingPressed = trainingAttempt.eventId === active?.id ? trainingAttempt.pressed : [];
   const trainingFeedback = trainingAttempt.eventId === active?.id ? trainingAttempt.feedback : "";
   const currentMeasure = active?.measure || 1;
+  const allLibraryTags = useMemo(
+    () => [...new Set(saved.flatMap((item) => item.tags))].sort((a, b) => a.localeCompare(b, "ru")),
+    [saved],
+  );
+  const libraryItems = useMemo(() => {
+    const query = libraryQuery.trim().toLocaleLowerCase("ru-RU");
+    return saved.filter((item) => {
+      const matchesTag = !libraryTag || item.tags.includes(libraryTag);
+      const haystack = [item.name, item.fileName, item.notes, ...item.tags]
+        .join(" ")
+        .toLocaleLowerCase("ru-RU");
+      return matchesTag && (!query || haystack.includes(query));
+    });
+  }, [libraryQuery, libraryTag, saved]);
 
   const clearTimers = useCallback(() => {
     timersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -808,17 +842,21 @@ export default function Home() {
   }, [stop]);
 
   const persistScore = useCallback((data: ScoreData, sourceName: string, xml: string) => {
+    const existing = loadSaved().find((item) => item.fileName === sourceName || item.name === displayNameFromFile(sourceName));
     const entry: SavedScore = {
       name: displayNameFromFile(sourceName),
       fileName: sourceName,
       xml,
       bpm: data.bpm,
       savedAt: Date.now(),
+      edits: existing?.edits,
+      tags: existing?.tags || [],
+      notes: existing?.notes || "",
     };
     const next = [
       entry,
       ...loadSaved().filter((item) => item.fileName !== sourceName && item.name !== entry.name),
-    ].slice(0, 10);
+    ];
     try {
       localStorage.setItem("notera-scores", JSON.stringify(next));
       setSaved(next);
@@ -1549,6 +1587,42 @@ export default function Home() {
     setSaved(next);
   };
 
+  const openSavedScore = (item: SavedScore) => {
+    const data = parseMusicXml(item.xml);
+    if (item.bpm) data.bpm = item.bpm;
+    if (item.edits?.length) {
+      const edits = new Map(item.edits.map((edit) => [edit.id, edit.midi]));
+      const durations = new Map(item.edits.map((edit) => [edit.id, edit.durationBeats]));
+      data.events = data.events.map((event) => edits.has(event.id)
+        ? {
+            ...event,
+            midi: edits.get(event.id)!,
+            durationBeats: durations.get(event.id) ?? event.durationBeats,
+            names: edits.get(event.id)!.map((midi) => nameForMidi(midi, false)),
+          }
+        : event);
+    }
+    setLibraryOpen(false);
+    openScore(data, item.fileName);
+  };
+
+  const editSavedMetadata = (item: SavedScore) => {
+    setEditingSavedAt(item.savedAt);
+    setLibraryTagsDraft(item.tags.join(", "));
+    setLibraryNotesDraft(item.notes);
+  };
+
+  const saveSavedMetadata = () => {
+    if (editingSavedAt === null) return;
+    const tags = [...new Set(libraryTagsDraft.split(",").map((tag) => tag.trim()).filter(Boolean))];
+    const next = saved.map((item) => item.savedAt === editingSavedAt
+      ? { ...item, tags, notes: libraryNotesDraft.trim() }
+      : item);
+    localStorage.setItem("notera-scores", JSON.stringify(next));
+    setSaved(next);
+    setEditingSavedAt(null);
+  };
+
   const exportXml = () => {
     if (!score?.sourceXml) return;
     const blob = new Blob([score.sourceXml], { type: "application/vnd.recordare.musicxml+xml" });
@@ -1657,6 +1731,40 @@ export default function Home() {
     );
   }
 
+  if (libraryOpen) {
+    return (
+      <main className={`landing library-page ${theme}`} data-testid="library">
+        <header className="landing-header">
+          <button className="brand" onClick={() => setLibraryOpen(false)}>
+            <span className="brand-mark">♪</span><span>Нотера</span>
+          </button>
+          <div className="header-actions">
+            <button className="ghost-button" onClick={() => setLibraryOpen(false)}>← {score ? "К партитуре" : "На главную"}</button>
+            <button className="icon-button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label="Сменить тему">{theme === "light" ? "☾" : "☀"}</button>
+          </div>
+        </header>
+        <section className="library-heading">
+          <div><span className="eyebrow">Моя музыка</span><h1>Библиотека произведений</h1><p>Сохранённые партитуры остаются на этом устройстве. Добавляйте теги и заметки, чтобы быстро находить нужное.</p></div>
+          <button className="primary-button" onClick={() => { setLibraryOpen(false); if (score) { stop(); setScore(null); } }}>Загрузить партитуру</button>
+        </section>
+        <section className="library-toolbar" aria-label="Поиск в библиотеке">
+          <input value={libraryQuery} onChange={(event) => setLibraryQuery(event.target.value)} placeholder="Поиск по названию, тегу или заметке" aria-label="Поиск" />
+          <select value={libraryTag} onChange={(event) => setLibraryTag(event.target.value)} aria-label="Фильтр по тегу"><option value="">Все теги</option>{allLibraryTags.map((tag) => <option value={tag} key={tag}>{tag}</option>)}</select>
+        </section>
+        {allLibraryTags.length > 0 && <div className="tag-filter"><button className={!libraryTag ? "active" : ""} onClick={() => setLibraryTag("")}>Все</button>{allLibraryTags.map((tag) => <button className={libraryTag === tag ? "active" : ""} onClick={() => setLibraryTag(tag)} key={tag}>{tag}</button>)}</div>}
+        <section className="library-list">
+          {libraryItems.length ? libraryItems.map((item) => (
+            <article className="library-card" key={item.savedAt}>
+              <button className="library-open" onClick={() => openSavedScore(item)}><span className="sheet-thumb">𝄞</span><span><b>{item.name}</b><small>{item.fileName} · {new Date(item.savedAt).toLocaleDateString("ru-RU")}</small>{item.notes && <em>{item.notes}</em>}<span className="tag-row">{item.tags.length ? item.tags.map((tag) => <i key={tag}>{tag}</i>) : <i className="empty-tag">Без тегов</i>}</span></span></button>
+              <div className="library-actions"><button className="ghost-button" onClick={() => editSavedMetadata(item)}>Изменить</button><button className="delete-button" onClick={() => removeSaved(item.savedAt)} aria-label={`Удалить ${item.name}`}>×</button></div>
+              {editingSavedAt === item.savedAt && <div className="library-edit"><label>Теги через запятую<input value={libraryTagsDraft} onChange={(event) => setLibraryTagsDraft(event.target.value)} placeholder="например: разбор, классика" /></label><label>Заметка<textarea value={libraryNotesDraft} onChange={(event) => setLibraryNotesDraft(event.target.value)} placeholder="Что нужно повторить или исправить" /></label><div><button className="primary-button" onClick={saveSavedMetadata}>Сохранить</button><button className="ghost-button" onClick={() => setEditingSavedAt(null)}>Отменить</button></div></div>}
+            </article>
+          )) : <div className="library-empty"><b>{saved.length ? "Ничего не найдено" : "Библиотека пока пуста"}</b><span>{saved.length ? "Измените запрос или выбранный тег." : "Загрузите MusicXML, MIDI или PDF — партитура сохранится здесь после обработки."}</span></div>}
+        </section>
+      </main>
+    );
+  }
+
   if (!score) {
     return (
       <main className={`landing ${theme}`} data-testid="landing">
@@ -1665,9 +1773,7 @@ export default function Home() {
             <span className="brand-mark">♪</span>
             <span>Нотера</span>
           </a>
-          <button className="icon-button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label="Сменить тему">
-            {theme === "light" ? "☾" : "☀"}
-          </button>
+          <div className="header-actions"><button className="ghost-button" onClick={() => setLibraryOpen(true)}>Библиотека{saved.length ? ` · ${saved.length}` : ""}</button><button className="icon-button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label="Сменить тему">{theme === "light" ? "☾" : "☀"}</button></div>
         </header>
 
         <section className="hero">
@@ -1722,23 +1828,7 @@ export default function Home() {
             <div className="recent-grid">
               {saved.map((item) => (
                 <article className="recent-card" key={item.savedAt}>
-                  <button className="recent-open" onClick={() => {
-                    const data = parseMusicXml(item.xml);
-                    if (item.bpm) data.bpm = item.bpm;
-                    if (item.edits?.length) {
-                      const edits = new Map(item.edits.map((edit) => [edit.id, edit.midi]));
-                      const durations = new Map(item.edits.map((edit) => [edit.id, edit.durationBeats]));
-                      data.events = data.events.map((event) => edits.has(event.id)
-                        ? {
-                            ...event,
-                            midi: edits.get(event.id)!,
-                            durationBeats: durations.get(event.id) ?? event.durationBeats,
-                            names: edits.get(event.id)!.map((midi) => nameForMidi(midi, false)),
-                          }
-                        : event);
-                    }
-                    openScore(data, item.fileName);
-                  }}>
+                  <button className="recent-open" onClick={() => openSavedScore(item)}>
                     <span className="sheet-thumb">𝄞</span>
                     <span><b>{item.name}</b><small>{new Date(item.savedAt).toLocaleDateString("ru-RU")}</small></span>
                   </button>
@@ -1768,6 +1858,7 @@ export default function Home() {
           <span>{score.composer || fileName}</span>
         </div>
         <div className="header-actions">
+          <button className="ghost-button" onClick={() => setLibraryOpen(true)}>Библиотека</button>
           {score.sourceXml && <button className="ghost-button" onClick={exportXml}>Экспорт MusicXML</button>}
           <button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Настройки">⚙</button>
         </div>

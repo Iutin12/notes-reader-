@@ -223,6 +223,35 @@ button, label { -webkit-tap-highlight-color: transparent; }
 .delete-button { opacity: .5; border: 0; background: transparent; font-size: 20px; }
 .landing-footer { max-width: 1400px; margin: auto; border-top: 1px solid var(--line); padding: 25px 0 36px; display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
 
+.library-page { padding-bottom: 70px; }
+.library-heading { max-width: 1400px; margin: 0 auto; padding: 68px 0 34px; display: flex; align-items: end; justify-content: space-between; gap: 32px; }
+.library-heading h1 { margin: 0; font: 500 clamp(42px, 5vw, 68px)/1 Georgia, "Times New Roman", serif; letter-spacing: -.04em; }
+.library-heading p { max-width: 620px; color: var(--muted); line-height: 1.55; margin: 18px 0 0; }
+.library-toolbar { max-width: 1400px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) 210px; gap: 12px; }
+.library-toolbar input, .library-toolbar select, .library-edit input, .library-edit textarea { min-height: 46px; width: 100%; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); color: var(--ink); padding: 10px 13px; }
+.library-toolbar input { font-size: 16px; }
+.tag-filter { max-width: 1400px; margin: 16px auto 28px; display: flex; flex-wrap: wrap; gap: 8px; }
+.tag-filter button, .tag-row i { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 6px 10px; color: var(--muted); font-style: normal; font-size: 12px; cursor: pointer; }
+.tag-filter button.active { border-color: var(--accent); background: var(--accent); color: white; }
+.library-list { max-width: 1400px; margin: 0 auto; display: grid; gap: 12px; }
+.library-card { position: relative; border: 1px solid var(--line); background: var(--panel); padding: 14px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.library-open { min-width: 0; flex: 1; border: 0; background: transparent; color: inherit; display: flex; align-items: center; gap: 18px; text-align: left; cursor: pointer; }
+.library-open > span:last-child { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.library-open b { font: 600 21px Georgia, "Times New Roman", serif; }
+.library-open small, .library-open em { overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.library-open em { font-style: normal; }
+.tag-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag-row .empty-tag { opacity: .65; }
+.library-actions { display: flex; align-items: center; gap: 7px; }
+.library-actions .ghost-button { display: inline-flex; }
+.library-edit { width: 100%; padding: 16px; border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.library-edit label { color: var(--muted); font-size: 12px; display: grid; gap: 6px; }
+.library-edit textarea { min-height: 76px; resize: vertical; font: inherit; }
+.library-edit > div { grid-column: 1 / -1; display: flex; gap: 10px; }
+.library-edit .ghost-button { display: inline-flex; }
+.library-empty { min-height: 220px; border: 1px dashed var(--line); display: grid; place-content: center; gap: 10px; text-align: center; color: var(--muted); padding: 30px; }
+.library-empty b { color: var(--ink); font: 500 28px Georgia, "Times New Roman", serif; }
+
 .processing-page { padding: 0 6vw 50px; }
 .processing-file {
   max-width: min(55vw, 520px);
