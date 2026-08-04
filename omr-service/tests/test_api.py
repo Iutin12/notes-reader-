@@ -1,5 +1,6 @@
 from io import BytesIO
 from math import ceil
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
@@ -51,6 +52,29 @@ def test_groups_treble_and_bass_into_one_piano_system() -> None:
         counts[row] = 600
 
     assert main.find_staff_system_bands(counts, 1_000, 4) == [(100, 370), (800, 1_070)]
+
+
+def test_portable_omr_retries_without_swap(monkeypatch, tmp_path: Path) -> None:
+    image = tmp_path / "page.png"
+    image.write_bytes(b"png")
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> str:
+        calls.append(command)
+        if "-swap" in command:
+            raise RuntimeError("swap failed")
+        output = Path(command[command.index("-output") + 1])
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "score.mxl").write_bytes(b"placeholder")
+        return "ok"
+
+    monkeypatch.setattr(main, "run_checked", fake_run)
+    monkeypatch.setattr(main, "extract_musicxml", lambda _source, target: target.write_text("<score-partwise />"))
+    result = main.portable_recognize_image(image, tmp_path / "output", [], "test")
+
+    assert result.exists()
+    assert "-swap" in calls[0]
+    assert "-swap" not in calls[1]
 
 
 def test_accepts_a_small_valid_pdf(monkeypatch) -> None:

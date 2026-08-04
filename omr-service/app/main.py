@@ -413,6 +413,31 @@ def portable_system_images(page: fitz.Page, directory: Path, page_index: int) ->
     return images, logs
 
 
+def portable_recognize_image(image: Path, output: Path, logs: list[str], label: str) -> Path:
+    """Export one image with a compatibility retry for Audiveris builds."""
+    failures: list[str] = []
+    for mode, swap in (("swap", True), ("plain", False)):
+        candidate_output = output / mode
+        candidate_output.mkdir(parents=True, exist_ok=True)
+        command = [AUDIVERIS_BIN, "-batch", "-transcribe", "-export"]
+        if swap:
+            command.append("-swap")
+        command.extend(["-output", str(candidate_output), "--", str(image)])
+        try:
+            logs.append(run_checked(command, timeout=OMR_TIMEOUT_SECONDS))
+            mxl_files = sorted(candidate_output.rglob("*.mxl"))
+            if not mxl_files:
+                raise RuntimeError("Audiveris не создал файл MusicXML")
+            extracted = candidate_output / "result.musicxml"
+            extract_musicxml(mxl_files[0], extracted)
+            if mode == "plain":
+                logs.append(f"{label}: использован совместимый режим без -swap.")
+            return extracted
+        except Exception as exc:  # noqa: BLE001 - retry alternate local engine mode
+            failures.append(f"{mode}: {exc}")
+    raise RuntimeError(f"{label}: оба режима Audiveris завершились ошибкой: {' | '.join(failures)}")
+
+
 def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
     """Run an all-in-one Audiveris desktop build without Docker utilities.
 
@@ -465,33 +490,40 @@ def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
             page_output = output_dir / f"page-{index:03d}"
             page_output.mkdir(exist_ok=True)
             system_xml: list[Path] = []
+            system_error: Exception | None = None
             for system_index, image in enumerate(system_images, start=1):
-                system_output = page_output / f"system-{system_index:02d}"
-                system_output.mkdir(exist_ok=True)
-                logs.append(run_checked(
-                    [
-                        AUDIVERIS_BIN,
-                        "-batch",
-                        "-transcribe",
-                        "-export",
-                        "-swap",
-                        "-output",
-                        str(system_output),
-                        "--",
-                        str(image),
-                    ],
-                    timeout=OMR_TIMEOUT_SECONDS,
-                ))
-                mxl_files = sorted(system_output.rglob("*.mxl"))
-                if not mxl_files:
-                    raise RuntimeError(
-                        f"Audiveris не создал MusicXML для страницы {index}, системы {system_index}."
-                    )
-                extracted_system = system_output / "system.musicxml"
-                extract_musicxml(mxl_files[0], extracted_system)
-                system_xml.append(extracted_system)
+                try:
+                    system_xml.append(portable_recognize_image(
+                        image,
+                        page_output / f"system-{system_index:02d}",
+                        logs,
+                        f"Страница {index}, система {system_index}",
+                    ))
+                except Exception as exc:  # noqa: BLE001 - page-level fallback below
+                    system_error = exc
+                    break
             extracted = page_output / "page.musicxml"
-            merge_page_musicxml(system_xml, extracted)
+            if system_error is None:
+                try:
+                    merge_page_musicxml(system_xml, extracted)
+                except Exception as exc:  # noqa: BLE001 - page-level fallback below
+                    system_error = exc
+            if system_error is not None:
+                # Some Audiveris versions reject a cropped system even though
+                # they can read the same page as a whole. Retain a usable score
+                # rather than failing the complete upload.
+                logs.append(f"Страница {index}: системы не распознаны ({system_error}); используем совместимый режим страницы.")
+                scale = portable_render_scale(pdf_page.rect.width, pdf_page.rect.height)
+                fallback_image = directory / f"source-page-{index:03d}-fallback.png"
+                fallback = pdf_page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+                fallback.save(str(fallback_image))
+                fallback_xml = portable_recognize_image(
+                    fallback_image,
+                    page_output / "page-fallback",
+                    logs,
+                    f"Страница {index}, совместимый режим",
+                )
+                shutil.copyfile(fallback_xml, extracted)
             page_xml.append(extracted)
             write_job(job_id, progress=10 + round(index / page_count * 78))
         document.close()
