@@ -332,6 +332,87 @@ def portable_render_scale(page_width_points: float, page_height_points: float) -
     return min(preferred_scale, maximum_scale)
 
 
+def find_staff_system_bands(
+    row_dark_pixels: list[int], page_width_pixels: int, scale: float
+) -> list[tuple[int, int]]:
+    """Find grand-staff systems from long horizontal staff lines in a raster."""
+    if not row_dark_pixels or page_width_pixels <= 0:
+        return []
+    # A staff line spans most of the page, unlike noteheads, text and barlines.
+    minimum_staff_ink = max(80, round(page_width_pixels * 0.25))
+    staff_rows = [
+        row for row, dark_pixels in enumerate(row_dark_pixels)
+        if dark_pixels >= minimum_staff_ink
+    ]
+    if not staff_rows:
+        return []
+    # The gap between treble and bass staffs is visibly larger than the gap
+    # within one staff, but still much smaller than the blank space between
+    # successive piano systems.
+    merge_gap = max(24, round(75 * scale))
+    bands: list[tuple[int, int]] = []
+    start = previous = staff_rows[0]
+    for row in staff_rows[1:]:
+        if row - previous > merge_gap:
+            bands.append((start, previous))
+            start = row
+        previous = row
+    bands.append((start, previous))
+    # A piano system contains two groups of five lines. Small one-line bands
+    # are usually title decorations or a scanning artefact, not a score.
+    return [band for band in bands if band[1] - band[0] >= round(12 * scale)]
+
+
+def portable_system_images(page: fitz.Page, directory: Path, page_index: int) -> tuple[list[Path], list[str]]:
+    """Render each staff system at 300 DPI, excluding surrounding page text."""
+    full_scale = PORTABLE_RENDER_DPI / 72
+    preview = page.get_pixmap(
+        matrix=fitz.Matrix(full_scale, full_scale),
+        colorspace=fitz.csGRAY,
+        alpha=False,
+    )
+    samples = memoryview(preview.samples)
+    row_dark_pixels = [
+        sum(1 for value in samples[row * preview.width:(row + 1) * preview.width] if value < 190)
+        for row in range(preview.height)
+    ]
+    bands = find_staff_system_bands(row_dark_pixels, preview.width, full_scale)
+    logs: list[str] = []
+    images: list[Path] = []
+    top_padding = round(22 * full_scale)
+    bottom_padding = round(30 * full_scale)
+    for system_index, (top, bottom) in enumerate(bands, start=1):
+        top = max(0, top - top_padding)
+        bottom = min(preview.height, bottom + bottom_padding)
+        clip = fitz.Rect(
+            page.rect.x0,
+            page.rect.y0 + top / full_scale,
+            page.rect.x1,
+            page.rect.y0 + bottom / full_scale,
+        )
+        image = directory / f"source-page-{page_index:03d}-system-{system_index:02d}.png"
+        system = page.get_pixmap(
+            matrix=fitz.Matrix(full_scale, full_scale),
+            clip=clip,
+            alpha=False,
+        )
+        if system.width * system.height > AUDIVERIS_SAFE_MAX_PIXELS:
+            # This is only expected for atypically tall systems; use the same
+            # safe rendering rule as the whole-page fallback in that case.
+            system = page.get_pixmap(
+                matrix=fitz.Matrix(portable_render_scale(clip.width, clip.height), portable_render_scale(clip.width, clip.height)),
+                clip=clip,
+                alpha=False,
+            )
+        system.save(str(image))
+        images.append(image)
+        logs.append(
+            f"Страница {page_index}, система {system_index}: {system.width}x{system.height} "
+            f"({system.width * system.height:,} пикселей, 300 DPI)."
+        )
+    return images, logs
+
+
 def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
     """Run an all-in-one Audiveris desktop build without Docker utilities.
 
@@ -364,43 +445,53 @@ def process_pdf_portable(job_id: str, source: Path, page_count: int) -> None:
                 progress=10 + round((index - 1) / page_count * 78),
                 message=f"Подготавливаем страницу {index} из {page_count}…",
             )
-            scale = portable_render_scale(pdf_page.rect.width, pdf_page.rect.height)
-            page_image = directory / f"source-page-{index:03d}.png"
-            pixmap = pdf_page.get_pixmap(
-                matrix=fitz.Matrix(scale, scale),
-                alpha=False,
-            )
-            pixmap.save(str(page_image))
-            logs.append(
-                f"Страница {index}: подготовлено изображение "
-                f"{pixmap.width}x{pixmap.height} ({pixmap.width * pixmap.height:,} пикселей, "
-                f"{round(scale * 72)} DPI)."
-            )
+            system_images, system_logs = portable_system_images(pdf_page, directory, index)
+            logs.extend(system_logs)
+            if not system_images:
+                # Fallback for PDFs whose staff lines cannot be detected.
+                scale = portable_render_scale(pdf_page.rect.width, pdf_page.rect.height)
+                page_image = directory / f"source-page-{index:03d}.png"
+                pixmap = pdf_page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+                pixmap.save(str(page_image))
+                system_images = [page_image]
+                logs.append(
+                    f"Страница {index}: не удалось выделить системы, подготовлено изображение "
+                    f"{pixmap.width}x{pixmap.height} ({pixmap.width * pixmap.height:,} пикселей)."
+                )
             write_job(
                 job_id,
                 message=f"Audiveris распознаёт страницу {index} из {page_count}…",
             )
             page_output = output_dir / f"page-{index:03d}"
             page_output.mkdir(exist_ok=True)
-            logs.append(run_checked(
-                [
-                    AUDIVERIS_BIN,
-                    "-batch",
-                    "-transcribe",
-                    "-export",
-                    "-swap",
-                    "-output",
-                    str(page_output),
-                    "--",
-                    str(page_image),
-                ],
-                timeout=OMR_TIMEOUT_SECONDS,
-            ))
-            mxl_files = sorted(page_output.rglob("*.mxl"))
-            if not mxl_files:
-                raise RuntimeError(f"Audiveris не создал MusicXML для страницы {index}.")
+            system_xml: list[Path] = []
+            for system_index, image in enumerate(system_images, start=1):
+                system_output = page_output / f"system-{system_index:02d}"
+                system_output.mkdir(exist_ok=True)
+                logs.append(run_checked(
+                    [
+                        AUDIVERIS_BIN,
+                        "-batch",
+                        "-transcribe",
+                        "-export",
+                        "-swap",
+                        "-output",
+                        str(system_output),
+                        "--",
+                        str(image),
+                    ],
+                    timeout=OMR_TIMEOUT_SECONDS,
+                ))
+                mxl_files = sorted(system_output.rglob("*.mxl"))
+                if not mxl_files:
+                    raise RuntimeError(
+                        f"Audiveris не создал MusicXML для страницы {index}, системы {system_index}."
+                    )
+                extracted_system = system_output / "system.musicxml"
+                extract_musicxml(mxl_files[0], extracted_system)
+                system_xml.append(extracted_system)
             extracted = page_output / "page.musicxml"
-            extract_musicxml(mxl_files[0], extracted)
+            merge_page_musicxml(system_xml, extracted)
             page_xml.append(extracted)
             write_job(job_id, progress=10 + round(index / page_count * 78))
         document.close()
