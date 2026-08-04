@@ -1744,7 +1744,7 @@ export default function Home() {
           </div>
         </header>
         <section className="library-heading">
-          <div><span className="eyebrow">Моя музыка</span><h1>Библиотека произведений</h1><p>Сохранённые партитуры остаются на этом устройстве. Добавляйте теги и заметки, чтобы быстро находить нужное.</p></div>
+          <div><span className="eyebrow">Моя музыка</span><h1>Библиотека произведений</h1><p>Сохранённые партитуры остаются на этом устройстве. Нажмите «Теги и заметка» на карточке, добавьте слова через запятую и сохраните — по ним можно будет искать.</p></div>
           <button className="primary-button" onClick={() => { setLibraryOpen(false); if (score) { stop(); setScore(null); } }}>Загрузить партитуру</button>
         </section>
         <section className="library-toolbar" aria-label="Поиск в библиотеке">
@@ -1756,8 +1756,8 @@ export default function Home() {
           {libraryItems.length ? libraryItems.map((item) => (
             <article className="library-card" key={item.savedAt}>
               <button className="library-open" onClick={() => openSavedScore(item)}><span className="sheet-thumb">𝄞</span><span><b>{item.name}</b><small>{item.fileName} · {new Date(item.savedAt).toLocaleDateString("ru-RU")}</small>{item.notes && <em>{item.notes}</em>}<span className="tag-row">{item.tags.length ? item.tags.map((tag) => <i key={tag}>{tag}</i>) : <i className="empty-tag">Без тегов</i>}</span></span></button>
-              <div className="library-actions"><button className="ghost-button" onClick={() => editSavedMetadata(item)}>Изменить</button><button className="delete-button" onClick={() => removeSaved(item.savedAt)} aria-label={`Удалить ${item.name}`}>×</button></div>
-              {editingSavedAt === item.savedAt && <div className="library-edit"><label>Теги через запятую<input value={libraryTagsDraft} onChange={(event) => setLibraryTagsDraft(event.target.value)} placeholder="например: разбор, классика" /></label><label>Заметка<textarea value={libraryNotesDraft} onChange={(event) => setLibraryNotesDraft(event.target.value)} placeholder="Что нужно повторить или исправить" /></label><div><button className="primary-button" onClick={saveSavedMetadata}>Сохранить</button><button className="ghost-button" onClick={() => setEditingSavedAt(null)}>Отменить</button></div></div>}
+              <div className="library-actions"><button className="ghost-button tag-edit-button" onClick={() => editSavedMetadata(item)}>🏷 Теги и заметка</button><button className="delete-button" onClick={() => removeSaved(item.savedAt)} aria-label={`Удалить ${item.name}`}>×</button></div>
+              {editingSavedAt === item.savedAt && <div className="library-edit"><label>Теги<input value={libraryTagsDraft} onChange={(event) => setLibraryTagsDraft(event.target.value)} placeholder="Например: разбор, классика" /><small>Введите несколько слов через запятую.</small></label><div className="tag-suggestions" aria-label="Быстрые теги">{["Разбор", "Выучено", "Любимое", "Классика", "Концерт"].map((tag) => <button key={tag} type="button" onClick={() => setLibraryTagsDraft((value) => value.split(",").map((part) => part.trim()).includes(tag) ? value : [value.trim(), tag].filter(Boolean).join(", "))}>+ {tag}</button>)}</div><label>Заметка<textarea value={libraryNotesDraft} onChange={(event) => setLibraryNotesDraft(event.target.value)} placeholder="Что нужно повторить или исправить" /></label><div><button className="primary-button" onClick={saveSavedMetadata}>Сохранить теги и заметку</button><button className="ghost-button" onClick={() => setEditingSavedAt(null)}>Отменить</button></div></div>}
             </article>
           )) : <div className="library-empty"><b>{saved.length ? "Ничего не найдено" : "Библиотека пока пуста"}</b><span>{saved.length ? "Измените запрос или выбранный тег." : "Загрузите MusicXML, MIDI или PDF — партитура сохранится здесь после обработки."}</span></div>}
         </section>

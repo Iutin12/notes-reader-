@@ -247,6 +247,11 @@ button, label { -webkit-tap-highlight-color: transparent; }
 .library-actions .ghost-button { display: inline-flex; }
 .library-edit { width: 100%; padding-top: 14px; border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr; gap: 12px; }
 .library-edit label { color: var(--muted); font-size: 12px; display: grid; gap: 6px; }
+.library-edit small { color: var(--muted); }
+.tag-edit-button { font-size: 12px; }
+.tag-suggestions { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag-suggestions button { border: 1px solid var(--line); border-radius: 999px; background: var(--paper); color: var(--ink); padding: 5px 9px; font-size: 12px; cursor: pointer; }
+.tag-suggestions button:hover { border-color: var(--accent); color: var(--accent); }
 .library-edit textarea { min-height: 76px; resize: vertical; font: inherit; }
 .library-edit > div { grid-column: 1 / -1; display: flex; gap: 10px; }
 .library-edit .ghost-button { display: inline-flex; }
